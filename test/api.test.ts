@@ -66,6 +66,39 @@ describe("authentication", () => {
     expect(await authenticate(req(await sign("other-aud")), prodEnv, jwks)).toBeNull();
     expect(await authenticate(req(await sign("test-aud", "https://evil.example.com")), prodEnv, jwks)).toBeNull();
   });
+
+  describe("staging password", () => {
+    const stagingEnv = { ...prodEnv, STAGING_PASSWORD: "s3cret-demo" };
+    const basic = (user: string, password: string) => ({
+      headers: { Authorization: `Basic ${btoa(`${user}:${password}`)}` },
+    });
+
+    it("prompts for the password on /admin and /api", async () => {
+      for (const path of ["/admin", "/api/me"]) {
+        const res = await call(path, {}, stagingEnv);
+        expect(res.status).toBe(401);
+        expect(res.headers.get("WWW-Authenticate")).toContain("Basic");
+      }
+    });
+
+    it("accepts the right password and records the username", async () => {
+      const res = await call("/api/me", basic("lathif@drpbuildlab.com", "s3cret-demo"), stagingEnv);
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as any).email).toBe("lathif@drpbuildlab.com");
+      expect((await call("/admin", basic("", "s3cret-demo"), stagingEnv)).status).toBe(200);
+    });
+
+    it("rejects a wrong password", async () => {
+      for (const password of ["wrong", "s3cret-dem", "s3cret-demo2", ""]) {
+        expect((await call("/api/me", basic("x", password), stagingEnv)).status).toBe(401);
+      }
+    });
+
+    it("is ignored when no staging password is set", async () => {
+      expect((await call("/api/me", basic("x", ""), prodEnv)).status).toBe(403);
+      expect((await call("/api/me", basic("x", "s3cret-demo"), prodEnv)).status).toBe(403);
+    });
+  });
 });
 
 describe("products API", () => {

@@ -13,6 +13,14 @@ const app = new Hono<AppEnv>();
 const requireLogin = async (c: any, next: () => Promise<void>) => {
   const email = await authenticate(c.req.raw, c.env);
   if (!email) {
+    // With a staging password set, ask the browser for it; the browser then
+    // sends the same credentials on the admin page's /api requests.
+    if (c.env.STAGING_PASSWORD) {
+      return c.text("Log in with the staging password.", 401, {
+        "Cache-Control": "no-store",
+        "WWW-Authenticate": 'Basic realm="UMI QR staging", charset="UTF-8"',
+      });
+    }
     return c.req.path.startsWith("/api")
       ? c.json({ error: "You're not logged in. Reload the page to log in again." }, 403, { "Cache-Control": "no-store" })
       : c.text("Access denied. Log in through Cloudflare Access to use the admin.", 403, { "Cache-Control": "no-store" });

@@ -5,6 +5,8 @@ export interface Env {
   PUBLIC_BASE_URL: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
+  /** Staging-only: when set, /admin and /api also accept HTTP Basic auth with this password. */
+  STAGING_PASSWORD?: string;
 }
 
 /**
