@@ -222,6 +222,24 @@ describe("manual uploads", () => {
     await db.createProduct(code, "P");
     expect((await upload(code, "es", pdf())).status).toBe(400);
     expect((await upload("TEST-NOPE", "en", pdf())).status).toBe(404);
+    // The PDF stored before discovering the product is missing is removed again.
+    expect(await r2Keys("manuals/TEST-NOPE/")).toEqual([]);
+  });
+
+  it("returns the same product it stored, in one round trip", async () => {
+    const code = await createWithManuals(["fr", "nl"]);
+    const res = await upload(code.toLowerCase(), "de", pdf("de"), "de.pdf");
+    expect(res.status).toBe(200);
+    const { product } = (await res.json()) as any;
+    const stored = (await (await call(`/api/products/${code}`)).json()) as any;
+    expect(product).toEqual(stored.product);
+    expect(product.manuals.map((m: any) => m.lang)).toEqual(["de", "fr", "nl"]);
+
+    // Replacing keeps one row per language and updates it in place.
+    const again = (await (await upload(code, "fr", pdf("fr2"), "fr-v2.pdf")).json()) as any;
+    expect(again.product.manuals.map((m: any) => m.lang)).toEqual(["de", "fr", "nl"]);
+    expect(again.product.manuals[1].original_name).toBe("fr-v2.pdf");
+    expect(again.product).toEqual(((await (await call(`/api/products/${code}`)).json()) as any).product);
   });
 
   it("stores the original filename and size", async () => {

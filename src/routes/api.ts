@@ -66,6 +66,21 @@ async function readJson(req: Request): Promise<Record<string, unknown>> {
   throw new ApiError(400, "The request body must be JSON.");
 }
 
+/**
+ * Runs cleanup after the response is sent, so the admin doesn't wait for it.
+ * Falls back to awaiting when there's no execution context (tests).
+ */
+type WaitUntil = { waitUntil(promise: Promise<unknown>): void };
+
+async function afterResponse(c: { executionCtx: WaitUntil }, task: Promise<unknown>): Promise<void> {
+  let ctx: WaitUntil | undefined;
+  try {
+    ctx = c.executionCtx;
+  } catch {}
+  if (ctx) ctx.waitUntil(task.catch((err) => console.error("background cleanup failed", err)));
+  else await task;
+}
+
 function langParam(value: string) {
   const lang = value.toLowerCase();
   if (!isLang(lang)) {
@@ -166,13 +181,15 @@ apiRoutes.patch("/products/:code", async (c) => {
 apiRoutes.delete("/products/:code", async (c) => {
   const keys = await Db.from(c.env).deleteProduct(normalizeCode(c.req.param("code")));
   if (keys === null) throw new ApiError(404, "This product doesn't exist. It may have been deleted.");
-  await deleteObjects(c.env.MANUALS, keys);
+  await afterResponse(c, deleteObjects(c.env.MANUALS, keys));
   return c.json({ deleted: true });
 });
 
 apiRoutes.put("/products/:code/manuals/:lang", async (c) => {
+  // No separate existence check up front: upsertManual reports a missing
+  // product in the same round trip that saves the manual.
   const db = Db.from(c.env);
-  const { code } = await requireProduct(db, c.req.param("code"));
+  const code = normalizeCode(c.req.param("code"));
   const lang = langParam(c.req.param("lang"));
 
   const declared = Number(c.req.header("Content-Length") ?? "0");
@@ -184,21 +201,25 @@ apiRoutes.put("/products/:code/manuals/:lang", async (c) => {
 
   // New object first, then point the database at it, then remove the old object.
   const { key, size } = await putManual(c.env.MANUALS, code, lang, new Blob(chunks));
-  let oldKey: string | null;
+  let saved: Awaited<ReturnType<Db["upsertManual"]>>;
   try {
-    oldKey = await db.upsertManual(code, lang, {
+    saved = await db.upsertManual(code, lang, {
       r2_key: key,
       original_name: cleanFilename(c.req.header("X-Filename"), code, lang),
       size_bytes: size,
       uploaded_by: c.get("email"),
     });
   } catch (err) {
-    await deleteObjects(c.env.MANUALS, [key]);
+    await afterResponse(c, deleteObjects(c.env.MANUALS, [key]));
     throw err;
   }
-  if (oldKey) await deleteObjects(c.env.MANUALS, [oldKey]);
+  if (!saved) {
+    await afterResponse(c, deleteObjects(c.env.MANUALS, [key]));
+    throw new ApiError(404, "This product doesn't exist. It may have been deleted.");
+  }
+  if (saved.oldKey) await afterResponse(c, deleteObjects(c.env.MANUALS, [saved.oldKey]));
 
-  return c.json({ product: present((await db.getProduct(code))!, c.env) });
+  return c.json({ product: present(saved.product, c.env) });
 });
 
 apiRoutes.delete("/products/:code/manuals/:lang", async (c) => {
@@ -207,7 +228,7 @@ apiRoutes.delete("/products/:code/manuals/:lang", async (c) => {
   const lang = langParam(c.req.param("lang"));
   const key = await db.deleteManual(code, lang);
   if (!key) throw new ApiError(404, "There's no manual in this language to remove.");
-  await deleteObjects(c.env.MANUALS, [key]);
+  await afterResponse(c, deleteObjects(c.env.MANUALS, [key]));
   return c.json({ product: present((await requireProduct(db, code)), c.env) });
 });
 

@@ -67,10 +67,12 @@ describe("db: manuals", () => {
     await db.createProduct(code, "Manual test");
 
     const first = { r2_key: "k1", original_name: "a.pdf", size_bytes: 10, uploaded_by: "a@x.com" };
-    expect(await db.upsertManual(code, "nl", first)).toBeNull();
+    expect((await db.upsertManual(code, "nl", first))?.oldKey).toBeNull();
 
     const second = { r2_key: "k2", original_name: "b.pdf", size_bytes: 20, uploaded_by: "b@x.com" };
-    expect(await db.upsertManual(code, "nl", second)).toBe("k1");
+    const saved = await db.upsertManual(code, "nl", second);
+    expect(saved?.oldKey).toBe("k1");
+    expect(saved?.product).toEqual(await db.getProduct(code));
 
     const m = await db.getManual(code, "nl");
     expect(m).toMatchObject({ lang: "nl", r2_key: "k2", original_name: "b.pdf", size_bytes: 20 });
@@ -92,9 +94,10 @@ describe("db: manuals", () => {
   });
 
   it("refuses a manual for a product that doesn't exist", async () => {
-    await expect(
-      db.upsertManual("TEST-NOPE", "en", { r2_key: "k", original_name: "x.pdf", size_bytes: 1, uploaded_by: null }),
-    ).rejects.toThrow();
+    expect(
+      await db.upsertManual("TEST-NOPE", "en", { r2_key: "k", original_name: "x.pdf", size_bytes: 1, uploaded_by: null }),
+    ).toBeNull();
+    expect(await db.getManual("TEST-NOPE", "en")).toBeNull();
   });
 });
 

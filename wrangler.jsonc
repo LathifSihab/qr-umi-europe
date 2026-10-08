@@ -9,7 +9,7 @@
     { "type": "Text", "globs": ["**/*.css", "**/*.client.js", "**/*.svg"], "fallthrough": true }
   ],
   "r2_buckets": [
-    { "binding": "MANUALS", "bucket_name": "umi-qr-manuals" }
+    { "binding": "MANUALS", "bucket_name": "umi-qr-manuals-eu" }
   ],
   // DATABASE_URL is a secret: `wrangler secret put DATABASE_URL` (production Neon branch).
   // Local values live in .dev.vars (Neon dev branch).
@@ -22,5 +22,8 @@
   // Custom domain disabled until umi-europe.com is an active zone on this account; serving on workers.dev meanwhile.
   // Restore: "routes": [{ "pattern": "qr.umi-europe.com", "custom_domain": true }]
   "workers_dev": true,
+  // Run the Worker near its backends (Neon in Frankfurt, R2 in Western Europe) instead of
+  // near the visitor: admin requests make several database and storage calls each.
+  "placement": { "mode": "smart" },
   "observability": { "enabled": true }
 }

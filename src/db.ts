@@ -124,28 +124,56 @@ export class Db {
   }
 
   /**
-   * Inserts or replaces the manual row. Returns the previous R2 key (to delete),
-   * or null if there was none. Throws if the product doesn't exist.
+   * Inserts or replaces the manual row in a single round trip, which matters
+   * because the database is far from most Worker locations. Returns the
+   * updated product and the previous R2 key (to delete), or null if the
+   * product doesn't exist.
    */
-  async upsertManual(code: string, lang: Lang, m: NewManual): Promise<string | null> {
-    const rows = await this.sql`
-      WITH old AS (
-        SELECT r2_key FROM manuals WHERE product_code = ${code} AND lang = ${lang} FOR UPDATE
-      ), up AS (
-        INSERT INTO manuals (product_code, lang, r2_key, original_name, size_bytes, uploaded_by)
-        VALUES (${code}, ${lang}, ${m.r2_key}, ${m.original_name}, ${m.size_bytes}, ${m.uploaded_by})
-        ON CONFLICT (product_code, lang) DO UPDATE SET
-          r2_key = EXCLUDED.r2_key,
-          original_name = EXCLUDED.original_name,
-          size_bytes = EXCLUDED.size_bytes,
-          uploaded_by = EXCLUDED.uploaded_by,
-          uploaded_at = now()
-        RETURNING 1
-      ), touch AS (
-        UPDATE products SET updated_at = now() WHERE code = ${code} RETURNING 1
-      )
-      SELECT (SELECT r2_key FROM old) AS old_key, (SELECT count(*) FROM up)::int AS n`;
-    return (rows[0].old_key as string | null) ?? null;
+  async upsertManual(
+    code: string,
+    lang: Lang,
+    m: NewManual,
+  ): Promise<{ product: Product; oldKey: string | null } | null> {
+    const rows = await this.sql.query(
+      `WITH old AS (
+         SELECT r2_key FROM manuals WHERE product_code = $1 AND lang = $2 FOR UPDATE
+       ), up AS (
+         INSERT INTO manuals (product_code, lang, r2_key, original_name, size_bytes, uploaded_by)
+         SELECT $1, $2, $3, $4, $5, $6 WHERE EXISTS (SELECT 1 FROM products WHERE code = $1)
+         ON CONFLICT (product_code, lang) DO UPDATE SET
+           r2_key = EXCLUDED.r2_key,
+           original_name = EXCLUDED.original_name,
+           size_bytes = EXCLUDED.size_bytes,
+           uploaded_by = EXCLUDED.uploaded_by,
+           uploaded_at = now()
+         RETURNING uploaded_at
+       ), touch AS (
+         UPDATE products SET updated_at = now() WHERE code = $1 RETURNING updated_at
+       )
+       SELECT (SELECT r2_key FROM old) AS old_key,
+              (SELECT uploaded_at FROM up) AS new_uploaded_at,
+              (SELECT updated_at FROM touch) AS new_updated_at,
+              ${PRODUCT_COLUMNS}
+       FROM products p WHERE p.code = $1`,
+      [code, lang, m.r2_key, m.original_name, m.size_bytes, m.uploaded_by],
+    );
+    const row = rows[0];
+    if (!row) return null;
+
+    // The product columns are read from the snapshot before the write, so
+    // apply the change here rather than spending another round trip.
+    const product = toProduct({ ...row, updated_at: row.new_updated_at });
+    const manual: Manual = {
+      lang,
+      r2_key: m.r2_key,
+      original_name: m.original_name,
+      size_bytes: m.size_bytes,
+      uploaded_at: new Date(row.new_uploaded_at).toISOString(),
+      uploaded_by: m.uploaded_by,
+    };
+    product.manuals = [...product.manuals.filter((x) => x.lang !== lang), manual]
+      .sort((a, b) => (a.lang < b.lang ? -1 : 1));
+    return { product, oldKey: (row.old_key as string | null) ?? null };
   }
 
   /** Removes one manual row. Returns its R2 key, or null if there was none. */
