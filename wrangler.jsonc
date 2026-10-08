@@ -15,7 +15,7 @@
   // Local values live in .dev.vars (Neon dev branch).
   "vars": {
     "ENVIRONMENT": "production",
-    "PUBLIC_BASE_URL": "https://qr.umi-europe.com",
+    "PUBLIC_BASE_URL": "https://qr-umi-europe.goosebumpsevents.workers.dev",
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": ""
   },
