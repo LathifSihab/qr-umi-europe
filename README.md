@@ -39,5 +39,6 @@ Locally, `PUBLIC_BASE_URL` is `http://localhost:8787`, so QR codes made locally 
 - `src/routes/api.ts`: admin JSON API
 - `src/db.ts`: Neon queries · `src/storage.ts`: R2 · `src/qr.ts`: SVG QR codes · `src/auth.ts`: Access JWT
 - `src/views/scanPages.ts`: public pages (EN/NL/FR/DE) · `src/views/admin/`: admin page (plain HTML/CSS/JS)
+- `assets/umi-logo.svg`: logo served at `/assets/umi-logo.svg`. UMI has no official SVG, so this is traced from the PNG on umi-europe.com (`assets/umi-logo.png`, kept as the source). Replace it if they ever supply a real vector file.
 
 Deployment steps are added in Phase 5.

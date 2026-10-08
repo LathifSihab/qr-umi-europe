@@ -6,8 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   // Admin page files and the logo are bundled into the Worker as text/binary modules.
   "rules": [
-    { "type": "Text", "globs": ["**/*.css", "**/*.client.js"], "fallthrough": true },
-    { "type": "Data", "globs": ["**/*.png"], "fallthrough": true }
+    { "type": "Text", "globs": ["**/*.css", "**/*.client.js", "**/*.svg"], "fallthrough": true }
   ],
   "r2_buckets": [
     { "binding": "MANUALS", "bucket_name": "umi-qr-manuals" }
@@ -20,8 +19,8 @@
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": ""
   },
-  "routes": [
-    { "pattern": "qr.umi-europe.com", "custom_domain": true }
-  ],
+  // Custom domain disabled until umi-europe.com is an active zone on this account; serving on workers.dev meanwhile.
+  // Restore: "routes": [{ "pattern": "qr.umi-europe.com", "custom_domain": true }]
+  "workers_dev": true,
   "observability": { "enabled": true }
 }

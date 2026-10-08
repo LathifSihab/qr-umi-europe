@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import logo from "../../assets/umi-logo.png";
+import logo from "../../assets/umi-logo.svg";
 import { PRODUCT_CODE_RE, isLang, normalizeCode, type Env } from "../config";
 import { Db } from "../db";
 import { languagePickerPage, notAvailablePage, orderLangs } from "../views/scanPages";
@@ -15,9 +15,10 @@ function notAvailable(request: Request, cacheControl: string): Response {
 
 publicRoutes.get("/", (c) => c.redirect("https://umi-europe.com", 302));
 
-publicRoutes.get("/assets/umi-logo.png", () =>
+// Vector logo traced from the PNG on umi-europe.com (assets/umi-logo.png is the source).
+publicRoutes.get("/assets/umi-logo.svg", () =>
   new Response(logo, {
-    headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" },
+    headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" },
   }),
 );
 

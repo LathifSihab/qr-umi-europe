@@ -42,11 +42,11 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 .topbar {
   background: #fff;
   border-bottom: 3px solid var(--umi-deep);
-  padding: 8px 20px;
+  padding: 12px 20px;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
 .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--umi-deep); font-weight: 600; font-size: 18px; }
-.brand img { display: block; height: 44px; width: auto; }
+.brand img { display: block; height: 34px; width: auto; }
 .who { color: var(--umi-muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .devbanner { background: #FFF4CC; color: #5c4400; padding: 8px 20px; font-size: 14px; border-bottom: 1px solid #f0d77a; }
 
@@ -180,7 +180,7 @@ dialog p { margin: 0 0 14px; }
 @media (max-width: 640px) {
   main { padding: 18px 16px 48px; }
   .topbar { padding: 8px 16px; }
-  .brand img { height: 36px; }
+  .brand img { height: 30px; }
   h1 { font-size: 22px; }
   .table thead { display: none; }
   .table, .table tbody, .table tr, .table td { display: block; width: 100%; }

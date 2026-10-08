@@ -69,8 +69,8 @@ const CSS = `
 html{-webkit-text-size-adjust:100%}
 body{margin:0;min-height:100vh;display:flex;flex-direction:column;background:var(--surface);color:var(--text);
 font:400 17px/1.5 Figtree,system-ui,-apple-system,"Segoe UI",sans-serif}
-header{background:#fff;border-bottom:4px solid var(--deep);padding:8px 20px;display:flex;justify-content:center}
-header img{display:block;height:64px;width:auto}
+header{background:#fff;border-bottom:4px solid var(--deep);padding:14px 20px;display:flex;justify-content:center}
+header img{display:block;height:48px;width:auto}
 main{flex:1;width:100%;max-width:480px;margin:0 auto;padding:28px 20px 16px}
 h1{margin:0;color:var(--deep);font-weight:600;font-size:24px;line-height:1.25;text-transform:uppercase;letter-spacing:.02em;overflow-wrap:anywhere}
 .sub{margin:4px 0 24px;color:var(--muted)}
@@ -102,7 +102,7 @@ function layout(lang: Lang, title: string, body: string): string {
 <style>${CSS}</style>
 </head>
 <body>
-<header><a href="https://umi-europe.com"><img src="/assets/umi-logo.png" alt="UMI Europe" width="91" height="64"></a></header>
+<header><a href="https://umi-europe.com"><img src="/assets/umi-logo.svg" alt="UMI Europe" width="92" height="48"></a></header>
 <main>${body}</main>
 <footer><a href="https://umi-europe.com">umi-europe.com</a></footer>
 </body>

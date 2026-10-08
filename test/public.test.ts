@@ -120,11 +120,11 @@ describe("GET /f/:code/:lang", () => {
   });
 });
 
-describe("GET /assets/umi-logo.png", () => {
-  it("serves the logo from the Worker", async () => {
-    const res = await call("/assets/umi-logo.png");
+describe("GET /assets/umi-logo.svg", () => {
+  it("serves the vector logo from the Worker", async () => {
+    const res = await call("/assets/umi-logo.svg");
     expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toBe("image/png");
-    expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(1000);
+    expect(res.headers.get("Content-Type")).toBe("image/svg+xml");
+    expect(await res.text()).toMatch(/^<svg [^>]*viewBox=/);
   });
 });

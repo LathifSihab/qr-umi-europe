@@ -11,7 +11,7 @@ declare module "*.client.js" {
   const text: string;
   export default text;
 }
-declare module "*.png" {
-  const data: ArrayBuffer;
-  export default data;
+declare module "*.svg" {
+  const text: string;
+  export default text;
 }
