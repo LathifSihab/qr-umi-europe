@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "umi-qr",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-20",
+  "compatibility_flags": ["nodejs_compat"],
+  // Admin page files and the logo are bundled into the Worker as text/binary modules.
+  "rules": [
+    { "type": "Text", "globs": ["**/*.css", "**/*.client.js"], "fallthrough": true },
+    { "type": "Data", "globs": ["**/*.png"], "fallthrough": true }
+  ],
+  "r2_buckets": [
+    { "binding": "MANUALS", "bucket_name": "umi-qr-manuals" }
+  ],
+  // DATABASE_URL is a secret: `wrangler secret put DATABASE_URL` (production Neon branch).
+  // Local values live in .dev.vars (Neon dev branch).
+  "vars": {
+    "ENVIRONMENT": "production",
+    "PUBLIC_BASE_URL": "https://qr.umi-europe.com",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
+  },
+  "routes": [
+    { "pattern": "qr.umi-europe.com", "custom_domain": true }
+  ],
+  "observability": { "enabled": true }
+}

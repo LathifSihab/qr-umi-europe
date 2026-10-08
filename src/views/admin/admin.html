@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>QR manuals – UMI Europe</title>
+<link rel="icon" href="/assets/umi-logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&display=swap">
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="#/">
+    <img src="/assets/umi-logo.png" alt="UMI Europe" width="63" height="44">
+    <span>QR manuals</span>
+  </a>
+  <span class="who" id="who"></span>
+</header>
+<div class="devbanner" id="devbanner" hidden>
+  Local development: QR codes point to <strong id="devbase"></strong>. Don't print these.
+</div>
+
+<main id="main" tabindex="-1">
+  <p class="loading" id="loading">Loading…</p>
+
+  <!-- Product list -->
+  <section id="list-view" hidden>
+    <div class="list-head">
+      <h1>Products</h1>
+      <button class="btn primary" id="add-open" type="button">Add product</button>
+    </div>
+    <div class="search">
+      <label for="search">Search products</label>
+      <input id="search" type="search" placeholder="Code or name" autocomplete="off">
+    </div>
+    <div id="list"></div>
+  </section>
+
+  <!-- Manage product -->
+  <section id="product-view" hidden>
+    <a class="back" href="#/">← All products</a>
+    <div class="product-head">
+      <h1 id="p-title" tabindex="-1"></h1>
+      <span class="code-chip" id="p-code"></span>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <h2>Product name</h2>
+        <form id="name-form" class="inline-form">
+          <label for="p-name" class="visually-hidden">Product name</label>
+          <input id="p-name" type="text" maxlength="200" required>
+          <button class="btn" type="submit">Save name</button>
+        </form>
+
+        <h2>Short link</h2>
+        <p class="hint">This is the link inside the QR code. It never changes.</p>
+        <div class="link-row">
+          <code id="p-link"></code>
+          <button class="btn small" type="button" id="copy-link">Copy</button>
+          <a class="btn small" id="test-link" target="_blank" rel="noopener">Test</a>
+        </div>
+      </div>
+
+      <div class="panel qr-panel">
+        <h2>QR code</h2>
+        <img id="p-qr" alt="" width="200" height="200">
+        <div class="qr-actions">
+          <a class="btn" id="dl-svg">Download SVG</a>
+          <button class="btn" type="button" id="dl-png">Download PNG</button>
+        </div>
+        <p class="hint">SVG for print and designers. PNG for Word or email.</p>
+      </div>
+    </div>
+
+    <h2 class="section-title">Manuals</h2>
+    <p class="hint">One PDF per language. Replacing a PDF updates it for every printed QR code.</p>
+    <div id="manuals" class="manuals"></div>
+
+    <div class="danger">
+      <h2>Danger zone</h2>
+      <p>Deleting this product removes all its manuals. Printed QR codes will show "manual not available".</p>
+      <button class="btn danger-btn" type="button" id="delete-open">Delete product</button>
+    </div>
+  </section>
+</main>
+
+<!-- Add product -->
+<dialog id="add-dialog" aria-labelledby="add-title">
+  <form id="add-form" method="dialog">
+    <h2 id="add-title">Add product</h2>
+    <div class="field">
+      <label for="add-code">Product code</label>
+      <input id="add-code" name="code" type="text" required maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="add-code-hint add-code-preview">
+      <p class="hint" id="add-code-hint">Use the product's SKU. This can't be changed later because it's printed in the QR code.</p>
+      <p class="preview" id="add-code-preview"></p>
+    </div>
+    <div class="field">
+      <label for="add-name">Product name</label>
+      <input id="add-name" name="name" type="text" required maxlength="200" autocomplete="off">
+    </div>
+    <p class="form-error" id="add-error" role="alert"></p>
+    <div class="dialog-actions">
+      <button class="btn" type="button" data-close>Cancel</button>
+      <button class="btn primary" type="submit">Add product</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Delete product -->
+<dialog id="delete-dialog" aria-labelledby="delete-title">
+  <form id="delete-form" method="dialog">
+    <h2 id="delete-title">Delete product</h2>
+    <p>QR codes already printed for this product will show "manual not available". This can't be undone.</p>
+    <div class="field">
+      <label for="delete-confirm">Type <strong id="delete-code"></strong> to confirm</label>
+      <input id="delete-confirm" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    </div>
+    <p class="form-error" id="delete-error" role="alert"></p>
+    <div class="dialog-actions">
+      <button class="btn" type="button" data-close>Cancel</button>
+      <button class="btn danger-btn" type="submit" id="delete-submit" disabled>Delete product</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Generic confirm -->
+<dialog id="confirm-dialog" aria-labelledby="confirm-title">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-body"></p>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok" id="confirm-ok"></button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script>/*__JS__*/</script>
+</body>
+</html>
