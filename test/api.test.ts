@@ -257,6 +257,21 @@ describe("manual uploads", () => {
     });
   });
 
+  it("accepts uploads for several languages at the same time", async () => {
+    const code = testCode();
+    await db.createProduct(code, "Parallel");
+    const langs = ["en", "nl", "fr", "de"];
+    const results = await Promise.all(langs.map((lang) => upload(code, lang, pdf(lang), `${lang}.pdf`)));
+    expect(results.map((r) => r.status)).toEqual([200, 200, 200, 200]);
+
+    const stored = ((await (await call(`/api/products/${code}`)).json()) as any).product;
+    expect(stored.manuals.map((m: any) => m.lang)).toEqual(["de", "en", "fr", "nl"]);
+    for (const lang of langs) {
+      expect(new TextDecoder().decode(await (await call(`/f/${code}/${lang}`)).arrayBuffer())).toContain(lang);
+      expect(await r2Keys(`manuals/${code}/${lang}/`)).toHaveLength(1);
+    }
+  });
+
   it("replacing a manual deletes the old R2 object", async () => {
     const code = await createWithManuals(["en"]);
     const [oldKey] = await r2Keys(`manuals/${code}/en/`);

@@ -9,8 +9,12 @@
     me: null,
     products: [],
     current: null, // product shown in the manage view
-    uploading: {}, // lang -> percent while an upload is running
+    // "CODE/lang" -> percent while an upload runs. Several can run at once,
+    // for different languages and products.
+    uploading: {},
   };
+
+  const uploadKey = (code, lang) => code + "/" + lang;
 
   // ---------- helpers ----------
 
@@ -88,6 +92,25 @@
     else state.products.push(product);
     state.products.sort((a, b) => a.code.localeCompare(b.code));
     if (state.current && state.current.code === product.code) state.current = product;
+  }
+
+  /**
+   * Applies a server response about one language only. With uploads running in
+   * parallel, responses can arrive out of order and each carries a snapshot of
+   * all manuals, so taking the whole product would undo a newer change.
+   */
+  function applyLangChange(code, lang, product) {
+    const local = state.products.find((p) => p.code === code);
+    if (!local) return upsertLocal(product);
+    const fresh = product.manuals.find((m) => m.lang === lang);
+    const manuals = local.manuals.filter((m) => m.lang !== lang);
+    if (fresh) manuals.push(fresh);
+    manuals.sort((a, b) => a.lang.localeCompare(b.lang));
+    upsertLocal({
+      ...local,
+      manuals,
+      updated_at: product.updated_at > local.updated_at ? product.updated_at : local.updated_at,
+    });
   }
 
   // ---------- routing ----------
@@ -245,7 +268,7 @@
     $("#manuals").innerHTML = state.me.languages
       .map((l) => {
         const m = byLang[l.code];
-        const pct = state.uploading[l.code];
+        const pct = state.uploading[uploadKey(p.code, l.code)];
         const head =
           '<div class="manual-head"><span class="badge' + (m ? " on" : "") + '">' + l.code.toUpperCase() + "</span>" +
           "<h3>" + esc(l.english) + "</h3>" +
@@ -255,7 +278,7 @@
         if (pct !== undefined) {
           return (
             '<div class="manual" data-lang="' + l.code + '">' + head +
-            '<div class="progress-label">Uploading… ' + pct + "%</div>" +
+            '<div class="progress-label">' + progressText(pct) + "</div>" +
             '<div class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><span style="width:' + pct + '%"></span></div>' +
             "</div>"
           );
@@ -369,9 +392,15 @@
     upload(p.code, lang, file, !!existing);
   }
 
+  // 100 means the file is sent and the server is storing it.
+  function progressText(pct) {
+    return pct >= 100 ? "Saving…" : "Uploading… " + pct + "%";
+  }
+
   function upload(code, lang, file, replacing) {
     const l = langInfo(lang);
-    state.uploading[lang] = 0;
+    const key = uploadKey(code, lang);
+    state.uploading[key] = 0;
     renderManuals();
 
     const xhr = new XMLHttpRequest();
@@ -380,17 +409,19 @@
     xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name));
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
-      state.uploading[lang] = Math.min(99, Math.round((e.loaded / e.total) * 100));
+      const pct = Math.round((e.loaded / e.total) * 100);
+      state.uploading[key] = pct;
+      if (!state.current || state.current.code !== code) return;
       const bar = document.querySelector('.manual[data-lang="' + lang + '"] .progress');
       if (bar) {
-        bar.firstElementChild.style.width = state.uploading[lang] + "%";
-        bar.setAttribute("aria-valuenow", state.uploading[lang]);
-        bar.previousElementSibling.textContent = "Uploading… " + state.uploading[lang] + "%";
+        bar.firstElementChild.style.width = pct + "%";
+        bar.setAttribute("aria-valuenow", pct);
+        bar.previousElementSibling.textContent = progressText(pct);
       }
     };
     const done = (error, product) => {
-      delete state.uploading[lang];
-      if (product) upsertLocal(product);
+      delete state.uploading[key];
+      if (product) applyLangChange(code, lang, product);
       if (state.current && state.current.code === code) renderManuals();
       if (error) toast(error, "error");
       else toast(l.english + " manual " + (replacing ? "replaced." : "uploaded."));
@@ -418,8 +449,8 @@
     if (!ok) return;
     try {
       const { product } = await api("DELETE", "/products/" + encodeURIComponent(p.code) + "/manuals/" + lang);
-      upsertLocal(product);
-      renderManuals();
+      applyLangChange(p.code, lang, product);
+      if (state.current && state.current.code === p.code) renderManuals();
       toast(l.english + " manual removed.");
     } catch (err) {
       toast(err.message, "error");
@@ -512,6 +543,10 @@
       e.preventDefault();
       zone.classList.remove("over");
       handleFile(zone.dataset.drop, e.dataTransfer.files[0]);
+    });
+    // Closing or reloading the page cancels running uploads, so ask first.
+    window.addEventListener("beforeunload", (e) => {
+      if (Object.keys(state.uploading).length > 0) e.preventDefault();
     });
     // Dropping a file outside a drop zone shouldn't navigate away from the admin.
     window.addEventListener("dragover", (e) => e.preventDefault());
