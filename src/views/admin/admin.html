@@ -18,7 +18,12 @@
     <img src="/assets/umi-logo.svg" alt="UMI Europe" width="65" height="34">
     <span>QR manuals</span>
   </a>
-  <span class="who" id="who"></span>
+  <div class="topbar-right">
+    <span class="who" id="who"></span>
+    <form method="post" action="/logout" id="logout" hidden>
+      <button class="btn small" type="submit">Log out</button>
+    </form>
+  </div>
 </header>
 <div class="devbanner" id="devbanner" hidden>
   Local development: QR codes point to <strong id="devbase"></strong>. Don't print these.

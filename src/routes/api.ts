@@ -130,6 +130,7 @@ apiRoutes.get("/me", (c) => c.json({
   environment: c.env.ENVIRONMENT,
   languages: LANGUAGES,
   max_upload_bytes: MAX_UPLOAD_BYTES,
+  can_log_out: Boolean(c.env.STAGING_PASSWORD),
 }));
 
 apiRoutes.get("/products", async (c) => {

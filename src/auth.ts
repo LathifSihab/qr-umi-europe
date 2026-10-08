@@ -14,35 +14,69 @@ function remoteJwks(teamDomain: string): JWTVerifyGetKey {
   return jwks;
 }
 
+// ---------- Staging login ----------
+// Used until Cloudflare Access is set up: a login page checks the STAGING_PASSWORD
+// secret and sets a signed session cookie. With the secret unset, all of this is
+// inert and only Access logins work.
+
+export const SESSION_COOKIE = "__Host-umi_session";
+const SESSION_DAYS = 7;
+export const SESSION_MAX_AGE = SESSION_DAYS * 24 * 60 * 60;
+export const NAME_MAX = 100;
+
+const enc = new TextEncoder();
+
 async function sha256(text: string): Promise<ArrayBuffer> {
-  return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return crypto.subtle.digest("SHA-256", enc.encode(text));
 }
 
-/**
- * Staging login used until Cloudflare Access is set up: HTTP Basic auth against
- * the STAGING_PASSWORD secret. Any username is accepted and recorded as the
- * uploader. Returns null when the secret is unset, so production is unaffected.
- */
-export async function stagingLogin(request: Request, env: Env): Promise<string | null> {
-  if (!env.STAGING_PASSWORD) return null;
-  const header = request.headers.get("Authorization");
-  if (!header?.startsWith("Basic ")) return null;
+/** Constant-time password check (digests make the lengths equal). */
+export async function checkStagingPassword(password: string, env: Env): Promise<boolean> {
+  if (!env.STAGING_PASSWORD) return false;
+  const [given, expected] = await Promise.all([sha256(password), sha256(env.STAGING_PASSWORD)]);
+  return crypto.subtle.timingSafeEqual(given, expected);
+}
 
-  let decoded: string;
+// Sessions are signed with the password itself, so changing the password logs everyone out.
+async function sign(data: string, env: Env): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw", enc.encode(`umi-session:${env.STAGING_PASSWORD}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(data)));
+  return btoa(String.fromCharCode(...mac)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Cookie value: "<name>|<expiry seconds>|<signature>", with the name URI-encoded. */
+export async function createSession(name: string, env: Env, now = Date.now()): Promise<string> {
+  const data = `${encodeURIComponent(name)}|${Math.floor(now / 1000) + SESSION_MAX_AGE}`;
+  return `${data}|${await sign(data, env)}`;
+}
+
+function readCookie(request: Request, name: string): string | null {
+  for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return null;
+}
+
+/** Returns the session's name, or null without a valid, unexpired session. */
+export async function stagingLogin(request: Request, env: Env, now = Date.now()): Promise<string | null> {
+  if (!env.STAGING_PASSWORD) return null;
+  const value = readCookie(request, SESSION_COOKIE);
+  const parts = value?.split("|");
+  if (!parts || parts.length !== 3) return null;
+  const [name, exp, sig] = parts;
+
+  const expected = await sign(`${name}|${exp}`, env);
+  const [a, b] = await Promise.all([sha256(sig), sha256(expected)]);
+  if (!crypto.subtle.timingSafeEqual(a, b)) return null;
+  if (!(Number(exp) > now / 1000)) return null;
   try {
-    decoded = atob(header.slice(6));
+    return decodeURIComponent(name);
   } catch {
     return null;
   }
-  const sep = decoded.indexOf(":");
-  if (sep < 0) return null;
-  const user = decoded.slice(0, sep).trim();
-  const password = decoded.slice(sep + 1);
-
-  // Compare digests so the comparison is constant-time regardless of length.
-  const [given, expected] = await Promise.all([sha256(password), sha256(env.STAGING_PASSWORD)]);
-  if (!crypto.subtle.timingSafeEqual(given, expected)) return null;
-  return user || "staging";
 }
 
 /**

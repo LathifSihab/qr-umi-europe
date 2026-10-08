@@ -52,6 +52,11 @@
       throw new Error("Can't reach the server. Check your internet connection and try again.");
     }
     const data = await res.json().catch(() => ({}));
+    // Staging session expired: back to the login page.
+    if (res.status === 401 && data.login) {
+      location.href = data.login;
+      throw new Error(data.error);
+    }
     if (!res.ok) throw new Error(data.error || "Something went wrong (" + res.status + "). Try again.");
     return data;
   }
@@ -520,6 +525,7 @@
       state.me = me;
       state.products = list.products;
       $("#who").textContent = me.email;
+      $("#logout").hidden = !me.can_log_out;
       if (me.environment === "development") {
         $("#devbase").textContent = me.public_base_url;
         $("#devbanner").hidden = false;
