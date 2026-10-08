@@ -8,6 +8,7 @@ import {
   normalizeCode,
   type Env,
 } from "../config";
+import { afterResponse } from "../background";
 import { Db, type Product } from "../db";
 import { qrSvg, shortUrl } from "../qr";
 import { deleteObjects, putManual } from "../storage";
@@ -64,21 +65,6 @@ async function readJson(req: Request): Promise<Record<string, unknown>> {
     if (body && typeof body === "object") return body as Record<string, unknown>;
   } catch {}
   throw new ApiError(400, "The request body must be JSON.");
-}
-
-/**
- * Runs cleanup after the response is sent, so the admin doesn't wait for it.
- * Falls back to awaiting when there's no execution context (tests).
- */
-type WaitUntil = { waitUntil(promise: Promise<unknown>): void };
-
-async function afterResponse(c: { executionCtx: WaitUntil }, task: Promise<unknown>): Promise<void> {
-  let ctx: WaitUntil | undefined;
-  try {
-    ctx = c.executionCtx;
-  } catch {}
-  if (ctx) ctx.waitUntil(task.catch((err) => console.error("background cleanup failed", err)));
-  else await task;
 }
 
 function langParam(value: string) {
@@ -145,7 +131,7 @@ apiRoutes.get("/me", (c) => c.json({
   environment: c.env.ENVIRONMENT,
   languages: LANGUAGES,
   max_upload_bytes: MAX_UPLOAD_BYTES,
-  can_log_out: Boolean(c.env.STAGING_PASSWORD),
+  can_log_out: Boolean(c.env.SESSION_SECRET),
 }));
 
 apiRoutes.get("/products", async (c) => {

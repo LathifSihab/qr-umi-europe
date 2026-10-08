@@ -1,8 +1,9 @@
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from "jose";
-import { afterEach, describe, expect, it } from "vitest";
-import { authenticate, DEV_EMAIL } from "../src/auth";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { authenticate, createSession, DEV_EMAIL, passwordVersion } from "../src/auth";
+import { hashPassword } from "../src/password";
 import { MAX_UPLOAD_BYTES, type Env } from "../src/config";
-import { call, cleanup, createWithManuals, db, devEnv, pdf, prodEnv, r2Keys, testCode } from "./helpers";
+import { call, cleanup, createWithManuals, db, devEnv, pdf, prodEnv, r2Keys, testCode, testEmail } from "./helpers";
 
 afterEach(cleanup);
 
@@ -67,65 +68,145 @@ describe("authentication", () => {
     expect(await authenticate(req(await sign("test-aud", "https://evil.example.com")), prodEnv, jwks)).toBeNull();
   });
 
-  describe("staging login page", () => {
-    const stagingEnv: Env = { ...prodEnv, STAGING_PASSWORD: "s3cret-demo" };
-    const login = (name: string, password: string, e = stagingEnv) =>
-      call("/login", { method: "POST", body: new URLSearchParams({ name, password }) }, e);
+  describe("accounts", () => {
+    const accEnv: Env = { ...prodEnv, SESSION_SECRET: "test-session-secret" };
+    const form = (path: string, fields: Record<string, string>, e = accEnv) =>
+      call(path, { method: "POST", body: new URLSearchParams(fields) }, e);
+    const login = (email: string, password: string, e = accEnv) => form("/login", { email, password }, e);
     const withCookie = (cookie: string) => ({ headers: { Cookie: cookie.split(";")[0] } });
+    async function account(password = "right-password") {
+      const email = testEmail();
+      await db.upsertUser(email, await hashPassword(password));
+      return email;
+    }
+    // Without RESEND_API_KEY the reset link is logged; read it from there.
+    async function requestResetLink(email: string): Promise<string | null> {
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const res = await form("/forgot", { email });
+        expect(res.status).toBe(200);
+        const line = log.mock.calls.map((c) => String(c[0])).find((s) => s.includes(email));
+        return line?.match(/token=([\w-]+)/)?.[1] ?? null;
+      } finally {
+        log.mockRestore();
+      }
+    }
 
     it("sends /admin to the login page and /api to a 401 pointing there", async () => {
-      const admin = await call("/admin", {}, stagingEnv);
+      const admin = await call("/admin", {}, accEnv);
       expect(admin.status).toBe(302);
       expect(admin.headers.get("Location")).toBe("/login");
-      const api = await call("/api/me", {}, stagingEnv);
+      const api = await call("/api/me", {}, accEnv);
       expect(api.status).toBe(401);
       expect(((await api.json()) as any).login).toBe("/login");
-      expect((await call("/login", {}, stagingEnv)).status).toBe(200);
+      const page = await (await call("/login", {}, accEnv)).text();
+      expect(page).toContain('type="email"');
+      expect(page).toContain('data-reveal="password"');
+      expect(page).toContain('href="/forgot"');
     });
 
-    it("logs in with the right password and records the name", async () => {
-      const res = await login("Lathif", "s3cret-demo");
+    it("logs in with email and password, case-insensitively", async () => {
+      const email = await account();
+      const res = await login(`  ${email.toUpperCase()} `, "right-password");
       expect(res.status).toBe(303);
       expect(res.headers.get("Location")).toBe("/admin");
       const cookie = res.headers.get("Set-Cookie")!;
       expect(cookie).toMatch(/^__Host-umi_session=.*HttpOnly; Secure; SameSite=Lax$/);
 
-      const me = await call("/api/me", withCookie(cookie), stagingEnv);
+      const me = await call("/api/me", withCookie(cookie), accEnv);
       expect(me.status).toBe(200);
-      expect(((await me.json()) as any)).toMatchObject({ email: "Lathif", can_log_out: true });
-      expect((await call("/admin", withCookie(cookie), stagingEnv)).status).toBe(200);
+      expect((await me.json()) as any).toMatchObject({ email, can_log_out: true });
+      expect((await call("/admin", withCookie(cookie), accEnv)).status).toBe(200);
     });
 
-    it("rejects a wrong password or a missing name, keeping the HTML safe", async () => {
-      for (const password of ["wrong", "s3cret-dem", "s3cret-demo2", ""]) {
-        const res = await login("x", password);
+    it("gives the same answer for a wrong password and an unknown email", async () => {
+      const email = await account();
+      const wrong = await login(email, "wrong-password");
+      const unknown = await login("nobody@example.com", "right-password");
+      for (const res of [wrong, unknown]) {
         expect(res.status).toBe(401);
         expect(res.headers.get("Set-Cookie")).toBeNull();
+        expect(await res.text()).toContain("don&#39;t match");
       }
-      expect((await login("  ", "s3cret-demo")).status).toBe(400);
-      expect(await (await login('"><script>', "wrong")).text()).not.toContain('"><script>');
+      expect(await (await login('"><script>@x.com', "x")).text()).not.toContain('"><script>');
     });
 
-    it("rejects tampered, expired and old-password sessions", async () => {
-      const cookie = (await login("Lathif", "s3cret-demo")).headers.get("Set-Cookie")!.split(";")[0];
-      const forged = cookie.replace("Lathif", "Admin");
-      expect((await call("/api/me", withCookie(forged), stagingEnv)).status).toBe(401);
-      expect((await call("/api/me", withCookie(cookie), { ...stagingEnv, STAGING_PASSWORD: "new-pw" })).status).toBe(401);
+    it("rejects tampered, expired and deleted-account sessions", async () => {
+      const email = await account();
+      const cookie = (await login(email, "right-password")).headers.get("Set-Cookie")!.split(";")[0];
+      const [, value] = cookie.split("=");
+      const [, version, iat, sig] = value.split(".");
+      const otherEmail = btoa("someone@example.com").replace(/=+$/, "");
+      expect((await call("/api/me", withCookie(`__Host-umi_session=${otherEmail}.${version}.${iat}.${sig}`), accEnv)).status).toBe(401);
+      expect((await call("/api/me", withCookie(cookie), { ...accEnv, SESSION_SECRET: "rotated" })).status).toBe(401);
 
-      const { createSession } = await import("../src/auth");
-      const old = await createSession("Lathif", stagingEnv, Date.now() - 8 * 24 * 3600 * 1000);
-      expect((await call("/api/me", withCookie(`__Host-umi_session=${old}`), stagingEnv)).status).toBe(401);
+      const user = (await db.getUser(email))!;
+      const old = await createSession(email, await passwordVersion(user.password_hash), accEnv, Date.now() - 8 * 24 * 3600 * 1000);
+      expect((await call("/api/me", withCookie(`__Host-umi_session=${old}`), accEnv)).status).toBe(401);
+
+      await db.deleteUser(email);
+      expect((await call("/api/me", withCookie(cookie), accEnv)).status).toBe(401);
+    });
+
+    it("resets a password with an emailed link, once, and logs out other sessions", async () => {
+      const email = await account("old-password");
+      const oldSession = (await login(email, "old-password")).headers.get("Set-Cookie")!;
+
+      const token = await requestResetLink(email);
+      expect(token).toBeTruthy();
+      const page = await call(`/reset?token=${token}`, {}, accEnv);
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain(email);
+
+      // Validation keeps the link usable.
+      expect((await form("/reset", { token: token!, password: "short", confirm: "short" })).status).toBe(400);
+      expect((await form("/reset", { token: token!, password: "new-password", confirm: "other-password" })).status).toBe(400);
+
+      const done = await form("/reset", { token: token!, password: "new-password", confirm: "new-password" });
+      expect(done.status).toBe(303);
+      expect(done.headers.get("Location")).toBe("/admin");
+      expect((await call("/api/me", withCookie(done.headers.get("Set-Cookie")!), accEnv)).status).toBe(200);
+
+      // The link is used up, the old password and the old session stop working.
+      expect((await call(`/reset?token=${token}`, {}, accEnv)).status).toBe(404);
+      expect((await form("/reset", { token: token!, password: "another-pass", confirm: "another-pass" })).status).toBe(404);
+      expect((await login(email, "old-password")).status).toBe(401);
+      expect((await login(email, "new-password")).status).toBe(303);
+      expect((await call("/api/me", withCookie(oldSession), accEnv)).status).toBe(401);
+    });
+
+    it("doesn't reveal whether an email has an account", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const res = await form("/forgot", { email: "nobody@example.com" });
+        expect(res.status).toBe(200);
+        expect(await res.text()).toContain("If <strong>nobody@example.com</strong> has an account");
+        expect(log).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+      }
+      expect((await form("/forgot", { email: "not-an-email" })).status).toBe(400);
+      expect((await call("/reset?token=made-up", {}, accEnv)).status).toBe(404);
+    });
+
+    it("sends at most one reset link per minute per account", async () => {
+      const email = await account();
+      expect(await requestResetLink(email)).toBeTruthy();
+      expect(await requestResetLink(email)).toBeNull();
     });
 
     it("logs out by clearing the cookie", async () => {
-      const res = await call("/logout", { method: "POST" }, stagingEnv);
+      const res = await call("/logout", { method: "POST" }, accEnv);
       expect(res.status).toBe(303);
       expect(res.headers.get("Set-Cookie")).toContain("Max-Age=0");
     });
 
-    it("is switched off when no staging password is set", async () => {
-      expect((await call("/login", {}, prodEnv)).status).toBe(302);
-      expect((await login("x", "", prodEnv)).headers.get("Set-Cookie")).toBeNull();
+    it("is switched off when no session secret is set", async () => {
+      for (const path of ["/login", "/forgot", "/reset?token=x"]) {
+        expect((await call(path, {}, prodEnv)).status).toBe(302);
+      }
+      const email = await account();
+      expect((await login(email, "right-password", prodEnv)).headers.get("Set-Cookie")).toBeNull();
       expect((await call("/admin", {}, prodEnv)).status).toBe(403);
       expect((await call("/api/me", {}, prodEnv)).status).toBe(403);
     });

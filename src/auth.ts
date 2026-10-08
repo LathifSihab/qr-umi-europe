@@ -1,5 +1,7 @@
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 import type { Env } from "./config";
+import { Db } from "./db";
+import { b64url } from "./password";
 
 export const DEV_EMAIL = "dev@localhost";
 
@@ -14,43 +16,50 @@ function remoteJwks(teamDomain: string): JWTVerifyGetKey {
   return jwks;
 }
 
-// ---------- Staging login ----------
-// Used until Cloudflare Access is set up: a login page checks the STAGING_PASSWORD
-// secret and sets a signed session cookie. With the secret unset, all of this is
-// inert and only Access logins work.
+// ---------- Account login ----------
+// Email + password accounts (users table). A successful login sets a signed
+// session cookie. With SESSION_SECRET unset, all of this is inert and only
+// Access logins work.
 
 export const SESSION_COOKIE = "__Host-umi_session";
-const SESSION_DAYS = 7;
-export const SESSION_MAX_AGE = SESSION_DAYS * 24 * 60 * 60;
-export const NAME_MAX = 100;
+export const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 
 const enc = new TextEncoder();
 
-async function sha256(text: string): Promise<ArrayBuffer> {
-  return crypto.subtle.digest("SHA-256", enc.encode(text));
+export function accountsEnabled(env: Env): boolean {
+  return Boolean(env.SESSION_SECRET);
 }
 
-/** Constant-time password check (digests make the lengths equal). */
-export async function checkStagingPassword(password: string, env: Env): Promise<boolean> {
-  if (!env.STAGING_PASSWORD) return false;
-  const [given, expected] = await Promise.all([sha256(password), sha256(env.STAGING_PASSWORD)]);
-  return crypto.subtle.timingSafeEqual(given, expected);
+export async function sha256Hex(text: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(text)));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Sessions are signed with the password itself, so changing the password logs everyone out.
-async function sign(data: string, env: Env): Promise<string> {
+async function sign(data: string, env: Env): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
-    "raw", enc.encode(`umi-session:${env.STAGING_PASSWORD}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+    "raw", enc.encode(`umi-session:${env.SESSION_SECRET}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
   );
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(data)));
-  return btoa(String.fromCharCode(...mac)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(data)));
 }
 
-/** Cookie value: "<name>|<expiry seconds>|<signature>", with the name URI-encoded. */
-export async function createSession(name: string, env: Env, now = Date.now()): Promise<string> {
-  const data = `${encodeURIComponent(name)}|${Math.floor(now / 1000) + SESSION_MAX_AGE}`;
-  return `${data}|${await sign(data, env)}`;
+/**
+ * Identifies the account's current password. Stored in the session, so a
+ * password change ends all earlier sessions without comparing clocks.
+ */
+export async function passwordVersion(passwordHash: string): Promise<string> {
+  return (await sha256Hex(`pv:${passwordHash}`)).slice(0, 16);
 }
+
+/** Cookie value: "<email b64url>.<password version>.<issued-at seconds>.<signature b64url>". */
+export async function createSession(email: string, version: string, env: Env, now = Date.now()): Promise<string> {
+  const data = `${b64url(enc.encode(email))}.${version}.${Math.floor(now / 1000)}`;
+  return `${data}.${b64url(await sign(data, env))}`;
+}
+
+export function sessionCookie(value: string): string {
+  return `${SESSION_COOKIE}=${value}; Path=/; Max-Age=${SESSION_MAX_AGE}; HttpOnly; Secure; SameSite=Lax`;
+}
+export const CLEAR_SESSION_COOKIE = `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 
 function readCookie(request: Request, name: string): string | null {
   for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
@@ -60,23 +69,45 @@ function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-/** Returns the session's name, or null without a valid, unexpired session. */
-export async function stagingLogin(request: Request, env: Env, now = Date.now()): Promise<string | null> {
-  if (!env.STAGING_PASSWORD) return null;
-  const value = readCookie(request, SESSION_COOKIE);
-  const parts = value?.split("|");
-  if (!parts || parts.length !== 3) return null;
-  const [name, exp, sig] = parts;
+/** Checks the cookie's signature and age. Returns its email and password version, or null. */
+export async function readSession(
+  request: Request,
+  env: Env,
+  now = Date.now(),
+): Promise<{ email: string; version: string } | null> {
+  if (!accountsEnabled(env)) return null;
+  const parts = readCookie(request, SESSION_COOKIE)?.split(".");
+  if (!parts || parts.length !== 4) return null;
+  const [emailPart, version, iat, sig] = parts;
 
-  const expected = await sign(`${name}|${exp}`, env);
-  const [a, b] = await Promise.all([sha256(sig), sha256(expected)]);
-  if (!crypto.subtle.timingSafeEqual(a, b)) return null;
-  if (!(Number(exp) > now / 1000)) return null;
+  const expected = b64url(await sign(`${emailPart}.${version}.${iat}`, env));
+  // Compare digests so the comparison is constant-time regardless of length.
+  const [a, b] = await Promise.all([sha256Hex(sig), sha256Hex(expected)]);
+  if (!crypto.subtle.timingSafeEqual(enc.encode(a), enc.encode(b))) return null;
+
+  const issuedAt = Number(iat);
+  if (!Number.isInteger(issuedAt) || issuedAt + SESSION_MAX_AGE <= now / 1000) return null;
   try {
-    return decodeURIComponent(name);
+    const email = new TextDecoder().decode(Uint8Array.from(
+      atob(emailPart.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0),
+    ));
+    return { email, version };
   } catch {
     return null;
   }
+}
+
+/**
+ * A valid session whose account still exists and whose password hasn't
+ * changed since it was issued. A password reset therefore logs out every
+ * other session of that account.
+ */
+export async function accountLogin(request: Request, env: Env): Promise<string | null> {
+  const session = await readSession(request, env);
+  if (!session) return null;
+  const user = await Db.from(env).getUser(session.email);
+  if (!user || (await passwordVersion(user.password_hash)) !== session.version) return null;
+  return user.email;
 }
 
 /**
@@ -93,8 +124,8 @@ export async function authenticate(
 ): Promise<string | null> {
   if (env.ENVIRONMENT === "development") return DEV_EMAIL;
 
-  const staging = await stagingLogin(request, env);
-  if (staging) return staging;
+  const account = await accountLogin(request, env);
+  if (account) return account;
 
   const token = request.headers.get("Cf-Access-Jwt-Assertion");
   if (!token || !env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) return null;

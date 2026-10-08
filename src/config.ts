@@ -5,8 +5,12 @@ export interface Env {
   PUBLIC_BASE_URL: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
-  /** Staging-only: when set, /admin and /api also accept HTTP Basic auth with this password. */
-  STAGING_PASSWORD?: string;
+  /** Signs login sessions. When set, /admin uses email + password accounts. */
+  SESSION_SECRET?: string;
+  /** Resend API key for password reset emails. Unset: reset links go to the logs. */
+  RESEND_API_KEY?: string;
+  /** Sender for password reset emails, e.g. "UMI QR manuals <noreply@umi-europe.com>". */
+  MAIL_FROM: string;
 }
 
 /**

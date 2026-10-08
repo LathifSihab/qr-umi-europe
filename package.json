@@ -8,7 +8,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc",
-    "migrate": "node scripts/migrate.mjs"
+    "migrate": "node scripts/migrate.mjs",
+    "user:add": "node scripts/add-user.mjs"
   },
   "keywords": [],
   "author": "",

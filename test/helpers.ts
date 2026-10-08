@@ -26,11 +26,19 @@ export function testCode(): string {
   created.push(code);
   return code;
 }
+const users: string[] = [];
+export function testEmail(): string {
+  const email = `test-${crypto.randomUUID().slice(0, 8)}@example.com`;
+  users.push(email);
+  return email;
+}
+
 export async function cleanup(): Promise<void> {
   for (const code of created.splice(0)) {
     const keys = await db.deleteProduct(code);
     if (keys?.length) await baseEnv.MANUALS.delete(keys);
   }
+  for (const email of users.splice(0)) await db.deleteUser(email);
 }
 
 export function pdf(text = "hello"): Uint8Array {

@@ -17,7 +17,10 @@
     "ENVIRONMENT": "production",
     "PUBLIC_BASE_URL": "https://qr-umi-europe.goosebumpsevents.workers.dev",
     "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": ""
+    "ACCESS_AUD": "",
+    // Sender for password reset emails. onboarding@resend.dev only delivers to the Resend
+    // account owner; switch to an address on a domain verified in Resend.
+    "MAIL_FROM": "UMI QR manuals <onboarding@resend.dev>"
   },
   // Custom domain disabled until umi-europe.com is an active zone on this account; serving on workers.dev meanwhile.
   // Restore: "routes": [{ "pattern": "qr.umi-europe.com", "custom_domain": true }]

@@ -25,6 +25,11 @@ export interface NewManual {
   uploaded_by: string | null;
 }
 
+export interface User {
+  email: string;
+  password_hash: string;
+}
+
 type Sql = NeonQueryFunction<false, false>;
 
 // Products with their manuals as a JSON array, so a list is a single round trip.
@@ -174,6 +179,68 @@ export class Db {
     product.manuals = [...product.manuals.filter((x) => x.lang !== lang), manual]
       .sort((a, b) => (a.lang < b.lang ? -1 : 1));
     return { product, oldKey: (row.old_key as string | null) ?? null };
+  }
+
+  // ---------- users ----------
+
+  async getUser(email: string): Promise<User | null> {
+    const rows = await this.sql`SELECT email, password_hash FROM users WHERE email = ${email}`;
+    return rows[0] ? { email: rows[0].email, password_hash: rows[0].password_hash } : null;
+  }
+
+  /** Creates the account, or sets a new password if it exists (logging out its sessions). */
+  async upsertUser(email: string, passwordHash: string): Promise<void> {
+    await this.sql`
+      INSERT INTO users (email, password_hash) VALUES (${email}, ${passwordHash})
+      ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, password_changed_at = now()`;
+  }
+
+  async deleteUser(email: string): Promise<void> {
+    await this.sql`DELETE FROM users WHERE email = ${email}`;
+  }
+
+  /**
+   * Stores a reset token hash for the account. Returns false when there's no
+   * such account, or one was requested in the last minute (to limit email spam).
+   */
+  async createPasswordReset(email: string, tokenHash: string, ttlMinutes: number): Promise<boolean> {
+    const rows = await this.sql`
+      WITH cleanup AS (DELETE FROM password_resets WHERE expires_at < now())
+      INSERT INTO password_resets (token_hash, email, expires_at)
+      SELECT ${tokenHash}, u.email, now() + make_interval(mins => ${ttlMinutes})
+      FROM users u
+      WHERE u.email = ${email}
+        AND NOT EXISTS (
+          SELECT 1 FROM password_resets r
+          WHERE r.email = u.email AND r.created_at > now() - interval '1 minute'
+        )
+      RETURNING email`;
+    return rows.length === 1;
+  }
+
+  /** The email a valid, unexpired reset token belongs to. */
+  async findPasswordReset(tokenHash: string): Promise<string | null> {
+    const rows = await this.sql`
+      SELECT email FROM password_resets WHERE token_hash = ${tokenHash} AND expires_at > now()`;
+    return (rows[0]?.email as string | undefined) ?? null;
+  }
+
+  /**
+   * Uses up the token and sets the new password in one statement; also voids
+   * the account's other reset links. Returns the email, or null if the token
+   * is invalid, expired or already used.
+   */
+  async resetPassword(tokenHash: string, passwordHash: string): Promise<string | null> {
+    const rows = await this.sql`
+      WITH used AS (
+        DELETE FROM password_resets WHERE token_hash = ${tokenHash} AND expires_at > now() RETURNING email
+      ), others AS (
+        DELETE FROM password_resets WHERE email IN (SELECT email FROM used)
+      )
+      UPDATE users SET password_hash = ${passwordHash}, password_changed_at = now()
+      FROM used WHERE users.email = used.email
+      RETURNING users.email`;
+    return (rows[0]?.email as string | undefined) ?? null;
   }
 
   /** Removes one manual row. Returns its R2 key, or null if there was none. */
