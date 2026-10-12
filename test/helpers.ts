@@ -45,18 +45,34 @@ export function pdf(text = "hello"): Uint8Array {
   return new TextEncoder().encode(`%PDF-1.4\n% ${text}\n`);
 }
 
-export async function createWithManuals(langs: string[]): Promise<string> {
+/** Uploads a document through the API. Returns the response. */
+export function addDocument(code: string, lang: string, title: string, body: BodyInit = pdf(`${lang} ${title}`), filename = "doc.pdf") {
+  return call(`/api/products/${code}/documents?lang=${lang}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/pdf",
+      "X-Title": encodeURIComponent(title),
+      "X-Filename": encodeURIComponent(filename),
+    },
+    body,
+  });
+}
+
+/**
+ * A product with one document per entry, added in order: "nl" or ["nl", "Title"].
+ * Each PDF contains its language and title. Returns the code and document ids.
+ */
+export async function createWithDocuments(docs: (string | [string, string])[]): Promise<{ code: string; ids: number[] }> {
   const code = testCode();
   await db.createProduct(code, "Test Product");
-  for (const lang of langs) {
-    const res = await call(`/api/products/${code}/manuals/${lang}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/pdf", "X-Filename": `${lang}.pdf` },
-      body: pdf(lang),
-    });
-    if (res.status !== 200) throw new Error(`upload failed: ${res.status} ${await res.text()}`);
+  const ids: number[] = [];
+  for (const d of docs) {
+    const [lang, title] = typeof d === "string" ? [d, `Manual ${d}`] : d;
+    const res = await addDocument(code, lang, title);
+    if (res.status !== 201) throw new Error(`upload failed: ${res.status} ${await res.text()}`);
+    ids.push(((await res.json()) as any).document.id);
   }
-  return code;
+  return { code, ids };
 }
 
 export async function r2Keys(prefix: string): Promise<string[]> {

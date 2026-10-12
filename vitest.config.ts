@@ -21,11 +21,15 @@ export default defineConfig({
         bindings: {
           ENVIRONMENT: "test",
           DATABASE_URL: devVar("DATABASE_URL") ?? "",
+          // Never email from tests, even when .dev.vars has a key: reset links go to the log.
+          RESEND_API_KEY: "",
         },
       },
     }),
   ],
   test: {
     testTimeout: 60000,
+    // Cleanup hooks also talk to Neon; give them as long as the tests.
+    hookTimeout: 60000,
   },
 });

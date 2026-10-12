@@ -1,6 +1,6 @@
 # UMI Europe – QR manuals
 
-Printed QR codes on UMI products open `https://qr.umi-europe.com/m/{CODE}`, which shows the product's manual (one PDF per language). The client manages products and manuals in `/admin`.
+Printed QR codes on UMI products open `https://qr.umi-europe.com/m/{CODE}`, which shows the product's documents: a language selector at the top, then the titled PDFs in that language (a product can have several per language). A product with a single document opens its PDF directly. The client manages products and documents in `/admin`.
 
 Stack: Cloudflare Workers (Hono), Neon Postgres, Cloudflare R2. Admin login: email + password accounts (or Cloudflare Access).
 
@@ -19,7 +19,7 @@ npm run dev                      # http://localhost:8787
 |---|---|
 | http://localhost:8787/admin | Admin. Login is skipped locally (`ENVIRONMENT=development`). |
 | http://localhost:8787/m/{CODE} | Scan page (what the QR code opens) |
-| http://localhost:8787/f/{CODE}/{lang} | The PDF itself |
+| http://localhost:8787/f/{CODE}/{id} | One document's PDF (old `/f/{CODE}/{lang}` links redirect to that language's first document) |
 
 Locally, `PUBLIC_BASE_URL` is `http://localhost:8787`, so QR codes made locally point to localhost. Don't print them.
 
@@ -36,7 +36,7 @@ Locally, `PUBLIC_BASE_URL` is `http://localhost:8787`, so QR codes made locally 
 ## Layout
 
 - `src/index.ts`: router and auth guard for `/admin` and `/api`
-- `src/routes/public.ts`: `/`, `/m/:code`, `/f/:code/:lang`, logo
+- `src/routes/public.ts`: `/`, `/m/:code`, `/f/:code/:id`, logo
 - `src/routes/api.ts`: admin JSON API
 - `src/db.ts`: Neon queries · `src/storage.ts`: R2 · `src/qr.ts`: SVG QR codes · `src/auth.ts`: sessions and Access JWT · `src/password.ts`: password hashing · `src/mail.ts`: reset emails (Resend)
 - `src/views/scanPages.ts`: public pages (EN/NL/FR/DE) · `src/views/admin/`: admin page (plain HTML/CSS/JS)

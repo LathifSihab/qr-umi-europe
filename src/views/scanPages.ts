@@ -28,31 +28,31 @@ export function orderLangs(available: Lang[], acceptLanguage: string | null | un
   return best ? [best, ...rest] : rest;
 }
 
-const TEXT: Record<Lang, { manual: string; choose: string; unavailable: string; unavailableBody: string; visit: string }> = {
+const TEXT: Record<Lang, { documents: string; language: string; unavailable: string; unavailableBody: string; visit: string }> = {
   en: {
-    manual: "Product manual",
-    choose: "Choose your language",
+    documents: "Product documents",
+    language: "Language",
     unavailable: "Manual not available",
     unavailableBody: "The manual for this product isn't available online right now. Visit our website for more information.",
     visit: "Go to umi-europe.com",
   },
   nl: {
-    manual: "Handleiding",
-    choose: "Kies je taal",
+    documents: "Productdocumenten",
+    language: "Taal",
     unavailable: "Handleiding niet beschikbaar",
     unavailableBody: "De handleiding van dit product is op dit moment niet online beschikbaar. Kijk op onze website voor meer informatie.",
     visit: "Naar umi-europe.com",
   },
   fr: {
-    manual: "Mode d’emploi",
-    choose: "Choisissez votre langue",
+    documents: "Documents du produit",
+    language: "Langue",
     unavailable: "Mode d’emploi indisponible",
     unavailableBody: "Le mode d’emploi de ce produit n’est pas disponible en ligne pour le moment. Consultez notre site pour plus d’informations.",
     visit: "Aller sur umi-europe.com",
   },
   de: {
-    manual: "Bedienungsanleitung",
-    choose: "Sprache wählen",
+    documents: "Produktdokumente",
+    language: "Sprache",
     unavailable: "Anleitung nicht verfügbar",
     unavailableBody: "Die Anleitung für dieses Produkt ist derzeit nicht online verfügbar. Weitere Informationen finden Sie auf unserer Website.",
     visit: "Zu umi-europe.com",
@@ -74,15 +74,23 @@ header img{display:block;height:48px;width:auto}
 main{flex:1;width:100%;max-width:480px;margin:0 auto;padding:28px 20px 16px}
 h1{margin:0;color:var(--deep);font-weight:600;font-size:24px;line-height:1.25;text-transform:uppercase;letter-spacing:.02em;overflow-wrap:anywhere}
 .sub{margin:4px 0 24px;color:var(--muted)}
-.label{margin:0 0 10px;font-weight:500}
 ul{list-style:none;margin:0;padding:0;display:grid;gap:12px}
-a.btn{display:flex;align-items:center;justify-content:space-between;min-height:56px;padding:12px 18px;border-radius:3px;
+a.btn{display:flex;align-items:center;justify-content:space-between;gap:12px;overflow-wrap:anywhere;min-height:56px;padding:12px 18px;border-radius:3px;
 border:2px solid var(--blue);background:#fff;color:var(--blue);font-weight:600;font-size:18px;text-decoration:none}
 a.btn.primary{background:var(--blue);color:#fff}
 a.btn:hover{border-color:var(--blue-dark);background:var(--blue-dark);color:#fff}
-a.btn::after{content:"\\2192";font-size:20px}
+a.btn::after{content:"\\2192";font-size:20px;flex:none}
 a:focus-visible{outline:3px solid var(--blue);outline-offset:3px}
 p.body{margin:0 0 24px}
+.langs{margin:0 0 24px}
+.langs ul{display:flex;gap:0;border:2px solid var(--deep);border-radius:3px;overflow:hidden;width:max-content;max-width:100%}
+.langs li{flex:1}
+.langs a{display:flex;align-items:center;justify-content:center;min-width:56px;min-height:44px;padding:8px 14px;
+color:var(--deep);background:#fff;font-weight:600;font-size:16px;letter-spacing:.04em;text-decoration:none}
+.langs li+li a{border-left:2px solid var(--deep)}
+.langs a[aria-current]{background:var(--deep);color:#fff}
+.langs a:hover:not([aria-current]){background:var(--surface)}
+.langs a:focus-visible{outline-offset:-5px;outline-color:var(--blue)}
 footer{text-align:center;padding:20px;font-size:15px}
 footer a{color:var(--blue)}
 @media (prefers-reduced-motion:no-preference){a.btn{transition:background-color .15s,color .15s}}
@@ -109,22 +117,47 @@ function layout(lang: Lang, title: string, body: string): string {
 </html>`;
 }
 
-export function languagePickerPage(
+/**
+ * The language to show: the one the visitor picked (?lang=), else their
+ * browser's best match, else the first in the default order.
+ */
+export function pickLang(available: Lang[], requested: string | undefined, acceptLanguage: string | null | undefined): Lang {
+  const r = requested?.toLowerCase() ?? "";
+  if (isLang(r) && available.includes(r)) return r;
+  return orderLangs(available, acceptLanguage)[0];
+}
+
+/**
+ * The scan page: a language selector at the top (when there's more than one
+ * language), then the product's documents in the chosen language.
+ */
+export function documentsPage(
   product: { code: string; name: string },
-  langs: Lang[],
-  acceptLanguage: string | null | undefined,
+  available: Lang[],
+  lang: Lang,
+  documents: { id: number; title: string }[],
 ): string {
-  const t = TEXT[langs[0] ?? uiLang(acceptLanguage)];
-  const buttons = langs
-    .map((code, i) => {
-      const l = LANGUAGES.find((x) => x.code === code)!;
-      return `<li><a class="btn${i === 0 ? " primary" : ""}" href="/f/${encodeURIComponent(product.code)}/${code}" hreflang="${code}" lang="${code}">${l.label}</a></li>`;
-    })
+  const t = TEXT[lang];
+  const code = encodeURIComponent(product.code);
+  const langNav =
+    available.length > 1
+      ? `<nav class="langs" aria-label="${t.language}"><ul>` +
+        LANGUAGES.filter((l) => available.includes(l.code))
+          .map(
+            (l) =>
+              `<li><a href="/m/${code}?lang=${l.code}" hreflang="${l.code}" lang="${l.code}" aria-label="${l.label}"` +
+              `${l.code === lang ? ' aria-current="page"' : ""}>${l.code.toUpperCase()}</a></li>`,
+          )
+          .join("") +
+        "</ul></nav>"
+      : "";
+  const buttons = documents
+    .map((d) => `<li><a class="btn" href="/f/${code}/${d.id}">${escapeHtml(d.title)}</a></li>`)
     .join("");
   return layout(
-    langs[0] ?? "en",
+    lang,
     product.name,
-    `<h1>${escapeHtml(product.name)}</h1><p class="sub">${t.manual}</p><p class="label">${t.choose}</p><ul>${buttons}</ul>`,
+    `${langNav}<h1>${escapeHtml(product.name)}</h1><p class="sub">${t.documents}</p><ul class="docs">${buttons}</ul>`,
   );
 }
 

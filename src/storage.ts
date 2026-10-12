@@ -1,17 +1,14 @@
-import type { Lang } from "./config";
-
-export function manualKey(code: string, lang: Lang): string {
-  return `manuals/${code}/${lang}/${crypto.randomUUID()}.pdf`;
+export function documentKey(code: string): string {
+  return `manuals/${code}/${crypto.randomUUID()}.pdf`;
 }
 
 /** Stores a new PDF object under a fresh key. Never overwrites an existing object. */
-export async function putManual(
+export async function putDocument(
   bucket: R2Bucket,
   code: string,
-  lang: Lang,
   body: ReadableStream | ArrayBuffer | Uint8Array | Blob,
 ): Promise<{ key: string; size: number }> {
-  const key = manualKey(code, lang);
+  const key = documentKey(code);
   const obj = await bucket.put(key, body, {
     httpMetadata: { contentType: "application/pdf" },
   });

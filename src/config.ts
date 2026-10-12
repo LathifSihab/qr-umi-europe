@@ -14,8 +14,8 @@ export interface Env {
 }
 
 /**
- * Manual languages, in default display order. Adding a language means adding a
- * row here plus a migration that updates the CHECK constraint on manuals.lang.
+ * Document languages, in default display order. Adding a language means adding a
+ * row here plus a migration that updates the CHECK constraint on documents.lang.
  */
 export const LANGUAGES = [
   { code: "en", label: "English", english: "English" },
@@ -32,6 +32,7 @@ export function isLang(value: string): value is Lang {
 
 export const PRODUCT_CODE_RE = /^[A-Z0-9][A-Z0-9-]{1,31}$/;
 export const PRODUCT_NAME_MAX = 200;
+export const DOCUMENT_TITLE_MAX = 200;
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 export function normalizeCode(code: string): string {

@@ -122,15 +122,35 @@ label { display: block; font-weight: 500; margin-bottom: 6px; }
 .qr-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 
 .section-title { margin-top: 8px; }
-.manuals { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 14px 0 32px; }
-.manual { background: #fff; border: 1px solid var(--umi-border-light); padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.manual-head { display: flex; align-items: center; gap: 8px; }
-.manual-head h3 { margin: 0; font-size: 16px; font-weight: 600; color: var(--umi-deep); }
-.manual .file { font-weight: 500; overflow-wrap: anywhere; }
-.manual .meta { color: var(--umi-muted); font-size: 14px; margin-top: -6px; }
-.manual .row { display: flex; gap: 8px; flex-wrap: wrap; }
-.status-ok { color: var(--umi-success-text); font-size: 13px; font-weight: 600; margin-left: auto; }
-.status-missing { color: var(--umi-muted); font-size: 13px; margin-left: auto; }
+/* Documents: language tabs, then the chosen language's list */
+.lang-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 14px; border-bottom: 2px solid var(--umi-deep); }
+.lang-tab {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 14px;
+  border: 1px solid var(--umi-border-light); border-bottom: none; border-radius: var(--radius) var(--radius) 0 0;
+  background: #fafafa; color: var(--umi-text); font: 500 15px/1.2 var(--font); cursor: pointer;
+}
+.lang-tab:hover { color: var(--umi-blue); }
+.lang-tab[aria-selected="true"] { background: var(--umi-deep); border-color: var(--umi-deep); color: #fff; }
+.lang-tab[aria-selected="true"] .badge:not(.on) { color: #fff; border-color: rgba(255, 255, 255, .6); background: transparent; }
+.lang-tab:focus-visible { outline-offset: -4px; }
+.lang-tab[aria-selected="true"]:focus-visible { outline-color: #fff; }
+.lang-count { font-size: 13px; font-weight: 600; min-width: 22px; padding: 1px 6px; border-radius: 10px; background: var(--umi-border-light); color: var(--umi-text); text-align: center; }
+.lang-tab[aria-selected="true"] .lang-count { background: rgba(255, 255, 255, .2); color: #fff; }
+.docs-panel { background: #fff; border: 1px solid var(--umi-border-light); border-top: none; padding: 16px; margin-bottom: 32px; }
+.docs-panel:focus { outline: none; }
+.docs { list-style: none; margin: 0 0 14px; padding: 0; border: 1px solid var(--umi-border-light); }
+.doc { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--umi-border-light); }
+.doc:last-child { border-bottom: none; }
+.doc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.doc-title { font-weight: 600; color: var(--umi-deep); overflow-wrap: anywhere; }
+.doc .meta { color: var(--umi-muted); font-size: 14px; overflow-wrap: anywhere; }
+.doc .row { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.btn.icon { min-width: 34px; padding: 6px 8px; font-size: 16px; }
+.docs-empty { margin: 0 0 14px; color: var(--umi-muted); }
+.badge .count { margin-left: 4px; font-weight: 500; opacity: .9; }
+.dialog-lang { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.dialog-drop { padding: 14px; text-align: left; }
+.dialog-drop input[type="file"] { max-width: 100%; font: 400 15px/1.3 var(--font); color: var(--umi-text); }
 .drop {
   border: 2px dashed var(--umi-border); border-radius: var(--radius);
   padding: 18px; text-align: center; color: var(--umi-muted); font-size: 14px;
@@ -176,7 +196,6 @@ dialog p { margin: 0 0 14px; }
 /* Mobile */
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }
-  .manuals { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
   main { padding: 18px 16px 48px; }
@@ -190,4 +209,8 @@ dialog p { margin: 0 0 14px; }
   .table td { padding: 2px 0; border: none; }
   .table .actions { text-align: left; padding-top: 10px; }
   .inline-form { flex-direction: column; }
+  .doc { flex-direction: column; align-items: stretch; }
+  .doc .row { justify-content: flex-start; }
+  .lang-tab { padding: 8px 10px; }
+  .lang-name { display: none; }
 }

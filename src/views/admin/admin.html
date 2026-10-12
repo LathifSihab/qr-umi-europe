@@ -82,13 +82,14 @@
       </div>
     </div>
 
-    <h2 class="section-title">Manuals</h2>
-    <p class="hint">One PDF per language. Replacing a PDF updates it for every printed QR code.</p>
-    <div id="manuals" class="manuals"></div>
+    <h2 class="section-title">Documents</h2>
+    <p class="hint">Each language has its own list. Visitors choose a language at the top of the page, then a document. Replacing a PDF updates it for every printed QR code.</p>
+    <div class="lang-tabs" id="lang-tabs" role="tablist" aria-label="Document language"></div>
+    <div class="docs-panel" id="docs-panel" role="tabpanel" tabindex="-1"></div>
 
     <div class="danger">
       <h2>Danger zone</h2>
-      <p>Deleting this product removes all its manuals. Printed QR codes will show "manual not available".</p>
+      <p>Deleting this product removes all its documents. Printed QR codes will show "manual not available".</p>
       <button class="btn danger-btn" type="button" id="delete-open">Delete product</button>
     </div>
   </section>
@@ -112,6 +113,31 @@
     <div class="dialog-actions">
       <button class="btn" type="button" data-close>Cancel</button>
       <button class="btn primary" type="submit">Add product</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Add or edit a document -->
+<dialog id="doc-dialog" aria-labelledby="doc-dialog-title">
+  <form id="doc-form" method="dialog">
+    <h2 id="doc-dialog-title"></h2>
+    <p class="dialog-lang" id="doc-dialog-lang"></p>
+    <div class="field">
+      <label for="doc-title">Title</label>
+      <input id="doc-title" type="text" required maxlength="200" autocomplete="off" aria-describedby="doc-title-hint">
+      <p class="hint" id="doc-title-hint">Visitors see this title. Write it in the document's language, for example “Handleiding” or “Sicherheitshinweise”.</p>
+    </div>
+    <div class="field">
+      <label for="doc-file" id="doc-file-label">PDF</label>
+      <div class="drop dialog-drop" id="doc-drop">
+        <input id="doc-file" type="file" accept="application/pdf,.pdf" aria-describedby="doc-file-hint">
+      </div>
+      <p class="hint" id="doc-file-hint"></p>
+    </div>
+    <p class="form-error" id="doc-error" role="alert"></p>
+    <div class="dialog-actions">
+      <button class="btn" type="button" data-close>Cancel</button>
+      <button class="btn primary" type="submit" id="doc-submit"></button>
     </div>
   </form>
 </dialog>

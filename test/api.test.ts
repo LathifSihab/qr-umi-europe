@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { authenticate, createSession, DEV_EMAIL, passwordVersion } from "../src/auth";
 import { hashPassword } from "../src/password";
 import { MAX_UPLOAD_BYTES, type Env } from "../src/config";
-import { call, cleanup, createWithManuals, db, devEnv, pdf, prodEnv, r2Keys, testCode, testEmail } from "./helpers";
+import { addDocument, call, cleanup, createWithDocuments, db, devEnv, pdf, prodEnv, r2Keys, testCode, testEmail } from "./helpers";
 
 afterEach(cleanup);
 
@@ -13,13 +13,15 @@ const json = (body: unknown, method = "POST"): RequestInit => ({
   body: JSON.stringify(body),
 });
 
-function upload(code: string, lang: string, body: BodyInit, filename = "manual.pdf") {
-  return call(`/api/products/${code}/manuals/${lang}`, {
+function replaceFile(code: string, id: number, body: BodyInit, filename = "new.pdf") {
+  return call(`/api/products/${code}/documents/${id}/file`, {
     method: "PUT",
     headers: { "Content-Type": "application/pdf", "X-Filename": encodeURIComponent(filename) },
     body,
   });
 }
+
+const text = async (res: Response) => new TextDecoder().decode(await res.arrayBuffer());
 
 describe("authentication", () => {
   it("rejects /api and /admin without an Access JWT in production", async () => {
@@ -224,7 +226,7 @@ describe("products API", () => {
     const res = await call("/api/products", json({ code: code.toLowerCase(), name: "  Widget  " }));
     expect(res.status).toBe(201);
     const { product } = (await res.json()) as any;
-    expect(product).toMatchObject({ code, name: "Widget", short_url: `https://qr.example.com/m/${code}`, manuals: [] });
+    expect(product).toMatchObject({ code, name: "Widget", short_url: `https://qr.example.com/m/${code}`, documents: [] });
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
@@ -255,17 +257,17 @@ describe("products API", () => {
 
     const list = (await (await call(`/api/products?q=${code}`)).json()) as any;
     expect(list.products.map((p: any) => p.code)).toEqual([code]);
-    expect(list.products[0]).not.toHaveProperty("manuals.0.r2_key");
+    expect(list.products[0]).not.toHaveProperty("documents.0.r2_key");
 
     expect((await call("/api/products/TEST-NOPE", json({ name: "X" }, "PATCH"))).status).toBe(404);
   });
 });
 
-describe("manual uploads", () => {
+describe("documents API", () => {
   it("rejects a file that isn't a PDF, even with a PDF content type", async () => {
     const code = testCode();
     await db.createProduct(code, "P");
-    const res = await upload(code, "en", new TextEncoder().encode("<html>not a pdf</html>"));
+    const res = await addDocument(code, "en", "Manual", new TextEncoder().encode("<html>not a pdf</html>"));
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).error).toBe("This file isn't a PDF. Upload a .pdf file.");
     expect(await r2Keys(`manuals/${code}/`)).toEqual([]);
@@ -276,8 +278,7 @@ describe("manual uploads", () => {
     await db.createProduct(code, "P");
     const body = new Uint8Array(MAX_UPLOAD_BYTES + 1);
     body.set(pdf());
-    const res = await upload(code, "en", body);
-    expect(res.status).toBe(413);
+    expect((await addDocument(code, "en", "Manual", body)).status).toBe(413);
   });
 
   it("rejects an oversized streamed upload without Content-Length", async () => {
@@ -293,88 +294,115 @@ describe("manual uploads", () => {
         controller.enqueue(chunk.slice());
       },
     });
-    const res = await upload(code, "en", stream);
-    expect(res.status).toBe(413);
+    expect((await addDocument(code, "en", "Manual", stream)).status).toBe(413);
     expect(await r2Keys(`manuals/${code}/`)).toEqual([]);
   });
 
-  it("rejects an unknown language or product", async () => {
+  it("requires a title and a known language and product", async () => {
     const code = testCode();
     await db.createProduct(code, "P");
-    expect((await upload(code, "es", pdf())).status).toBe(400);
-    expect((await upload("TEST-NOPE", "en", pdf())).status).toBe(404);
+    const noTitle = await addDocument(code, "en", "   ");
+    expect(noTitle.status).toBe(400);
+    expect(((await noTitle.json()) as any).error).toBe("Enter a title for the document.");
+    expect((await addDocument(code, "en", "x".repeat(201))).status).toBe(400);
+    expect((await addDocument(code, "es", "Manual")).status).toBe(400);
+    expect((await addDocument("TEST-NOPE", "en", "Manual")).status).toBe(404);
     // The PDF stored before discovering the product is missing is removed again.
     expect(await r2Keys("manuals/TEST-NOPE/")).toEqual([]);
   });
 
-  it("returns the same product it stored, in one round trip", async () => {
-    const code = await createWithManuals(["fr", "nl"]);
-    const res = await upload(code.toLowerCase(), "de", pdf("de"), "de.pdf");
-    expect(res.status).toBe(200);
-    const { product } = (await res.json()) as any;
-    const stored = (await (await call(`/api/products/${code}`)).json()) as any;
-    expect(product).toEqual(stored.product);
-    expect(product.manuals.map((m: any) => m.lang)).toEqual(["de", "fr", "nl"]);
-
-    // Replacing keeps one row per language and updates it in place.
-    const again = (await (await upload(code, "fr", pdf("fr2"), "fr-v2.pdf")).json()) as any;
-    expect(again.product.manuals.map((m: any) => m.lang)).toEqual(["de", "fr", "nl"]);
-    expect(again.product.manuals[1].original_name).toBe("fr-v2.pdf");
-    expect(again.product).toEqual(((await (await call(`/api/products/${code}`)).json()) as any).product);
-  });
-
-  it("stores the original filename and size", async () => {
+  it("adds several titled documents per language, in order", async () => {
     const code = testCode();
     await db.createProduct(code, "P");
-    const res = await upload(code, "nl", pdf(), "Handleiding X200 (v2).pdf");
-    expect(res.status).toBe(200);
-    const { product } = (await res.json()) as any;
-    expect(product.manuals).toHaveLength(1);
-    expect(product.manuals[0]).toMatchObject({
+    const res = await addDocument(code.toLowerCase(), "nl", "Handleiding X200 – veiligheid & gebruik", pdf(), "Handleiding (v2).pdf");
+    expect(res.status).toBe(201);
+    const { document } = (await res.json()) as any;
+    expect(document).toMatchObject({
       lang: "nl",
-      original_name: "Handleiding X200 (v2).pdf",
+      title: "Handleiding X200 – veiligheid & gebruik",
+      position: 1,
+      original_name: "Handleiding (v2).pdf",
       size_bytes: pdf().byteLength,
       uploaded_by: DEV_EMAIL,
     });
+    expect(document).not.toHaveProperty("r2_key");
+
+    expect((await addDocument(code, "nl", "Onderhoud")).status).toBe(201);
+    expect((await addDocument(code, "en", "Manual")).status).toBe(201);
+    const { product } = (await (await call(`/api/products/${code}`)).json()) as any;
+    expect(product.documents.map((d: any) => [d.lang, d.title, d.position])).toEqual([
+      ["en", "Manual", 1],
+      ["nl", "Handleiding X200 – veiligheid & gebruik", 1],
+      ["nl", "Onderhoud", 2],
+    ]);
   });
 
-  it("accepts uploads for several languages at the same time", async () => {
+  it("accepts several uploads at the same time", async () => {
     const code = testCode();
     await db.createProduct(code, "Parallel");
-    const langs = ["en", "nl", "fr", "de"];
-    const results = await Promise.all(langs.map((lang) => upload(code, lang, pdf(lang), `${lang}.pdf`)));
-    expect(results.map((r) => r.status)).toEqual([200, 200, 200, 200]);
+    const titles = ["One", "Two", "Three", "Four"];
+    const results = await Promise.all(titles.map((t) => addDocument(code, "en", t, pdf(t))));
+    // Compare bodies too, so a failure shows the server's error, not just a status.
+    const failures = await Promise.all(results.filter((r) => r.status !== 201).map(async (r) => `${r.status} ${await r.text()}`));
+    expect(failures).toEqual([]);
+    await Promise.all(results.map((r) => r.body?.cancel()));
 
     const stored = ((await (await call(`/api/products/${code}`)).json()) as any).product;
-    expect(stored.manuals.map((m: any) => m.lang)).toEqual(["de", "en", "fr", "nl"]);
-    for (const lang of langs) {
-      expect(new TextDecoder().decode(await (await call(`/f/${code}/${lang}`)).arrayBuffer())).toContain(lang);
-      expect(await r2Keys(`manuals/${code}/${lang}/`)).toHaveLength(1);
-    }
+    expect(stored.documents.map((d: any) => d.title).sort()).toEqual([...titles].sort());
+    for (const d of stored.documents) expect(await text(await call(`/f/${code}/${d.id}`))).toContain(d.title);
+    expect(await r2Keys(`manuals/${code}/`)).toHaveLength(4);
   });
 
-  it("replacing a manual deletes the old R2 object", async () => {
-    const code = await createWithManuals(["en"]);
-    const [oldKey] = await r2Keys(`manuals/${code}/en/`);
-    expect((await upload(code, "en", pdf("v2"))).status).toBe(200);
-    const keys = await r2Keys(`manuals/${code}/en/`);
+  it("renames a document", async () => {
+    const { code, ids } = await createWithDocuments([["fr", "Mode d’emploi"]]);
+    const res = await call(`/api/products/${code}/documents/${ids[0]}`, json({ title: "  Guide rapide " }, "PATCH"));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).document).toMatchObject({ id: ids[0], title: "Guide rapide", lang: "fr" });
+    expect((await call(`/api/products/${code}/documents/${ids[0]}`, json({ title: "" }, "PATCH"))).status).toBe(400);
+    expect((await call(`/api/products/${code}/documents/999999999`, json({ title: "X" }, "PATCH"))).status).toBe(404);
+    expect((await call(`/api/products/${code}/documents/abc`, json({ title: "X" }, "PATCH"))).status).toBe(404);
+  });
+
+  it("replacing a PDF keeps the document and deletes the old R2 object", async () => {
+    const { code, ids } = await createWithDocuments(["en"]);
+    const [oldKey] = await r2Keys(`manuals/${code}/`);
+    const res = await replaceFile(code, ids[0], pdf("v2"), "v2.pdf");
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).document).toMatchObject({ id: ids[0], title: "Manual en", original_name: "v2.pdf" });
+    const keys = await r2Keys(`manuals/${code}/`);
     expect(keys).toHaveLength(1);
     expect(keys[0]).not.toBe(oldKey);
-    expect(new TextDecoder().decode(await (await call(`/f/${code}/en`)).arrayBuffer())).toContain("v2");
+    expect(await text(await call(`/f/${code}/${ids[0]}`))).toContain("v2");
+
+    expect((await replaceFile(code, 999999999, pdf())).status).toBe(404);
+    expect(await r2Keys(`manuals/${code}/`)).toHaveLength(1);
   });
 
-  it("removing a manual deletes its R2 object", async () => {
-    const code = await createWithManuals(["en", "nl"]);
-    const res = await call(`/api/products/${code}/manuals/nl`, { method: "DELETE" });
+  it("reorders a language's documents", async () => {
+    const { code, ids } = await createWithDocuments([["de", "A"], ["de", "B"], ["de", "C"], ["en", "E"]]);
+    const res = await call(`/api/products/${code}/documents/order`, json({ lang: "de", ids: [ids[2], ids[0], ids[1]] }, "PUT"));
     expect(res.status).toBe(200);
-    expect(((await res.json()) as any).product.manuals.map((m: any) => m.lang)).toEqual(["en"]);
-    expect(await r2Keys(`manuals/${code}/nl/`)).toEqual([]);
-    expect((await call(`/api/products/${code}/manuals/nl`, { method: "DELETE" })).status).toBe(404);
+    expect(((await res.json()) as any).documents.map((d: any) => d.title)).toEqual(["C", "A", "B"]);
+    const { product } = (await (await call(`/api/products/${code}`)).json()) as any;
+    expect(product.documents.map((d: any) => d.title)).toEqual(["C", "A", "B", "E"]);
+
+    expect((await call(`/api/products/${code}/documents/order`, json({ lang: "de", ids: ["x"] }, "PUT"))).status).toBe(400);
+    expect((await call(`/api/products/${code}/documents/order`, json({ lang: "es", ids: [] }, "PUT"))).status).toBe(400);
+  });
+
+  it("removing a document deletes its R2 object", async () => {
+    const { code, ids } = await createWithDocuments(["en", "nl"]);
+    const res = await call(`/api/products/${code}/documents/${ids[1]}`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    const { product } = (await (await call(`/api/products/${code}`)).json()) as any;
+    expect(product.documents.map((d: any) => d.lang)).toEqual(["en"]);
+    expect(await r2Keys(`manuals/${code}/`)).toHaveLength(1);
+    expect((await call(`/api/products/${code}/documents/${ids[1]}`, { method: "DELETE" })).status).toBe(404);
   });
 
   it("deleting a product cleans up its R2 objects", async () => {
-    const code = await createWithManuals(["en", "fr"]);
-    expect(await r2Keys(`manuals/${code}/`)).toHaveLength(2);
+    const { code } = await createWithDocuments(["en", "fr", "fr"]);
+    expect(await r2Keys(`manuals/${code}/`)).toHaveLength(3);
     expect((await call(`/api/products/${code}`, { method: "DELETE" })).status).toBe(200);
     expect(await r2Keys(`manuals/${code}/`)).toEqual([]);
     expect(await db.getProduct(code)).toBeNull();

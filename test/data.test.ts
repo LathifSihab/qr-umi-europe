@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config";
 import { Db } from "../src/db";
-import { deleteObjects, putManual } from "../src/storage";
+import { deleteObjects, putDocument } from "../src/storage";
 
 const e = env as unknown as Env;
 const db = Db.from(e);
@@ -27,7 +27,7 @@ describe("db: products", () => {
     expect(await db.createProduct(code, "Test product")).toBe(true);
 
     const p = await db.getProduct(code);
-    expect(p).toMatchObject({ code, name: "Test product", manuals: [] });
+    expect(p).toMatchObject({ code, name: "Test product", documents: [] });
 
     expect(await db.updateProductName(code, "Renamed")).toBe(true);
     expect((await db.getProduct(code))?.name).toBe("Renamed");
@@ -61,51 +61,82 @@ describe("db: products", () => {
   });
 });
 
-describe("db: manuals", () => {
-  it("adds, replaces and removes a manual, returning the keys to clean up", async () => {
+describe("db: documents", () => {
+  const file = (key: string) => ({ r2_key: key, original_name: `${key}.pdf`, size_bytes: 10, uploaded_by: "a@x.com" });
+
+  it("adds documents per language in order, renames, replaces and removes them", async () => {
     const code = testCode();
-    await db.createProduct(code, "Manual test");
+    await db.createProduct(code, "Document test");
 
-    const first = { r2_key: "k1", original_name: "a.pdf", size_bytes: 10, uploaded_by: "a@x.com" };
-    expect((await db.upsertManual(code, "nl", first))?.oldKey).toBeNull();
+    const a = (await db.createDocument(code, "nl", "Handleiding", file("k1")))!;
+    const b = (await db.createDocument(code, "nl", "Veiligheid", file("k2")))!;
+    const c = (await db.createDocument(code, "en", "Manual", file("k3")))!;
+    expect([a.position, b.position, c.position]).toEqual([1, 2, 1]);
+    expect(a).toMatchObject({ lang: "nl", title: "Handleiding", r2_key: "k1", original_name: "k1.pdf", size_bytes: 10 });
 
-    const second = { r2_key: "k2", original_name: "b.pdf", size_bytes: 20, uploaded_by: "b@x.com" };
-    const saved = await db.upsertManual(code, "nl", second);
-    expect(saved?.oldKey).toBe("k1");
-    expect(saved?.product).toEqual(await db.getProduct(code));
+    const p = (await db.getProduct(code))!;
+    expect(p.documents.map((d) => d.title)).toEqual(["Manual", "Handleiding", "Veiligheid"]);
+    expect(p.documents[1]).toEqual(a);
 
-    const m = await db.getManual(code, "nl");
-    expect(m).toMatchObject({ lang: "nl", r2_key: "k2", original_name: "b.pdf", size_bytes: 20 });
+    expect((await db.updateDocumentTitle(code, a.id, "Gebruiksaanwijzing"))?.title).toBe("Gebruiksaanwijzing");
 
-    const p = await db.getProduct(code);
-    expect(p?.manuals.map((x) => x.lang)).toEqual(["nl"]);
+    const replaced = (await db.replaceDocumentFile(code, a.id, { ...file("k4"), original_name: "new.pdf" }))!;
+    expect(replaced.oldKey).toBe("k1");
+    expect(replaced.document).toMatchObject({ id: a.id, title: "Gebruiksaanwijzing", r2_key: "k4", original_name: "new.pdf", position: 1 });
+    expect(await db.getDocument(code, a.id)).toEqual(replaced.document);
 
-    expect(await db.deleteManual(code, "nl")).toBe("k2");
-    expect(await db.deleteManual(code, "nl")).toBeNull();
+    expect(await db.deleteDocument(code, a.id)).toBe("k4");
+    expect(await db.deleteDocument(code, a.id)).toBeNull();
+    expect(await db.getDocument(code, a.id)).toBeNull();
   });
 
-  it("returns all manual keys when a product is deleted", async () => {
+  it("reorders one language without touching the others", async () => {
+    const code = testCode();
+    await db.createProduct(code, "Order");
+    const ids: number[] = [];
+    for (const k of ["a", "b", "c"]) ids.push((await db.createDocument(code, "de", k, file(k)))!.id);
+    const en = (await db.createDocument(code, "en", "e", file("e")))!;
+
+    const order = await db.reorderDocuments(code, "de", [ids[2], ids[0]]);
+    // Listed ids first, then the rest in their old order.
+    expect(order.map((d) => d.title)).toEqual(["c", "a", "b"]);
+    expect(order.map((d) => d.position)).toEqual([1, 2, 3]);
+    expect((await db.getDocument(code, en.id))?.position).toBe(1);
+    // Ids of another product or language are ignored.
+    expect((await db.reorderDocuments(code, "de", [en.id, ids[1]])).map((d) => d.title)).toEqual(["b", "c", "a"]);
+  });
+
+  it("only finds a document through its own product", async () => {
+    const code = testCode();
+    const other = testCode();
+    await db.createProduct(code, "One");
+    await db.createProduct(other, "Two");
+    const d = (await db.createDocument(code, "en", "Manual", file("k")))!;
+    expect(await db.getDocument(other, d.id)).toBeNull();
+    expect(await db.updateDocumentTitle(other, d.id, "X")).toBeNull();
+    expect(await db.replaceDocumentFile(other, d.id, file("k2"))).toBeNull();
+    expect(await db.deleteDocument(other, d.id)).toBeNull();
+    expect((await db.getDocument(code, d.id))?.title).toBe("Manual");
+  });
+
+  it("returns all document keys when a product is deleted", async () => {
     const code = testCode();
     await db.createProduct(code, "Cascade");
-    await db.upsertManual(code, "en", { r2_key: "ke", original_name: "e.pdf", size_bytes: 1, uploaded_by: null });
-    await db.upsertManual(code, "de", { r2_key: "kd", original_name: "d.pdf", size_bytes: 1, uploaded_by: null });
+    await db.createDocument(code, "en", "One", file("ke"));
+    await db.createDocument(code, "en", "Two", file("kd"));
     expect((await db.deleteProduct(code))?.sort()).toEqual(["kd", "ke"]);
-    expect(await db.getManual(code, "en")).toBeNull();
   });
 
-  it("refuses a manual for a product that doesn't exist", async () => {
-    expect(
-      await db.upsertManual("TEST-NOPE", "en", { r2_key: "k", original_name: "x.pdf", size_bytes: 1, uploaded_by: null }),
-    ).toBeNull();
-    expect(await db.getManual("TEST-NOPE", "en")).toBeNull();
+  it("refuses a document for a product that doesn't exist", async () => {
+    expect(await db.createDocument("TEST-NOPE", "en", "X", file("k"))).toBeNull();
   });
 });
 
 describe("storage", () => {
   it("stores each upload under a new key and deletes objects", async () => {
-    const a = await putManual(e.MANUALS, "X200", "en", PDF);
-    const b = await putManual(e.MANUALS, "X200", "en", PDF);
-    expect(a.key).toMatch(/^manuals\/X200\/en\/[0-9a-f-]{36}\.pdf$/);
+    const a = await putDocument(e.MANUALS, "X200", PDF);
+    const b = await putDocument(e.MANUALS, "X200", PDF);
+    expect(a.key).toMatch(/^manuals\/X200\/[0-9a-f-]{36}\.pdf$/);
     expect(a.key).not.toBe(b.key);
     expect(a.size).toBe(PDF.byteLength);
 

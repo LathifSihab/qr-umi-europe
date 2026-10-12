@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import logo from "../../assets/umi-logo.svg";
 import { PRODUCT_CODE_RE, isLang, normalizeCode, type Env } from "../config";
 import { Db } from "../db";
-import { languagePickerPage, notAvailablePage, orderLangs } from "../views/scanPages";
+import { documentsPage, notAvailablePage, pickLang } from "../views/scanPages";
 
 export const publicRoutes = new Hono<{ Bindings: Env }>();
 
@@ -23,22 +23,24 @@ publicRoutes.get("/assets/umi-logo.svg", () =>
 );
 
 // The URL inside every printed QR code. Always 302 + no-store, never 301, so
-// changes to the manuals take effect immediately for already-printed codes.
+// changes to the documents take effect immediately for already-printed codes.
 publicRoutes.get("/m/:code", async (c) => {
   const code = normalizeCode(c.req.param("code"));
   const product = PRODUCT_CODE_RE.test(code) ? await Db.from(c.env).getProduct(code) : null;
-  if (!product || product.manuals.length === 0) return notAvailable(c.req.raw, "no-store");
+  if (!product || product.documents.length === 0) return notAvailable(c.req.raw, "no-store");
 
-  if (product.manuals.length === 1) {
+  // A single document needs no page: open the PDF straight away.
+  if (product.documents.length === 1) {
     return new Response(null, {
       status: 302,
-      headers: { Location: `/f/${code}/${product.manuals[0].lang}`, "Cache-Control": "no-store" },
+      headers: { Location: `/f/${code}/${product.documents[0].id}`, "Cache-Control": "no-store" },
     });
   }
 
-  const acceptLanguage = c.req.header("Accept-Language");
-  const langs = orderLangs(product.manuals.map((m) => m.lang), acceptLanguage);
-  return new Response(languagePickerPage(product, langs, acceptLanguage), {
+  const available = [...new Set(product.documents.map((d) => d.lang))];
+  const lang = pickLang(available, c.req.query("lang"), c.req.header("Accept-Language"));
+  const documents = product.documents.filter((d) => d.lang === lang);
+  return new Response(documentsPage(product, available, lang, documents), {
     headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", Vary: "Accept-Language" },
   });
 });
@@ -60,19 +62,35 @@ function parseRange(header: string | null, size: number): ByteRange | null | und
   return { offset: start, length: end - start + 1 };
 }
 
-// Streams the current PDF. Short cache so replaced manuals show up within minutes.
-publicRoutes.on(["GET", "HEAD"], "/f/:code/:lang", async (c) => {
-  const code = normalizeCode(c.req.param("code"));
-  const lang = c.req.param("lang").toLowerCase();
-  if (!PRODUCT_CODE_RE.test(code) || !isLang(lang)) return notAvailable(c.req.raw, "no-store");
+/** Content-Disposition with the document title as the filename (RFC 6266/5987). */
+function inlineFilename(code: string, lang: string, title: string): string {
+  const fallback = `UMI-${code}-${lang.toUpperCase()}.pdf`;
+  const utf8 = encodeURIComponent(`UMI ${code} - ${title}.pdf`).replace(/['()*!]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `inline; filename="${fallback}"; filename*=UTF-8''${utf8}`;
+}
 
-  const manual = await Db.from(c.env).getManual(code, lang);
-  const head = manual && (await c.env.MANUALS.head(manual.r2_key));
-  if (!manual || !head) return notAvailable(c.req.raw, "no-store");
+// Streams the current PDF. Short cache so replaced documents show up within minutes.
+publicRoutes.on(["GET", "HEAD"], "/f/:code/:id", async (c) => {
+  const code = normalizeCode(c.req.param("code"));
+  const ref = c.req.param("id").toLowerCase();
+  if (!PRODUCT_CODE_RE.test(code)) return notAvailable(c.req.raw, "no-store");
+  const db = Db.from(c.env);
+
+  // Older links were /f/{CODE}/{lang}: send them to that language's first document.
+  if (isLang(ref)) {
+    const first = (await db.getProduct(code))?.documents.find((d) => d.lang === ref);
+    if (!first) return notAvailable(c.req.raw, "no-store");
+    return new Response(null, { status: 302, headers: { Location: `/f/${code}/${first.id}`, "Cache-Control": "no-store" } });
+  }
+  if (!/^\d{1,9}$/.test(ref)) return notAvailable(c.req.raw, "no-store");
+
+  const doc = await db.getDocument(code, Number(ref));
+  const head = doc && (await c.env.MANUALS.head(doc.r2_key));
+  if (!doc || !head) return notAvailable(c.req.raw, "no-store");
 
   const headers = new Headers({
     "Content-Type": "application/pdf",
-    "Content-Disposition": `inline; filename="UMI-${code}-${lang.toUpperCase()}.pdf"`,
+    "Content-Disposition": inlineFilename(code, doc.lang, doc.title),
     "Cache-Control": "public, max-age=300",
     "Accept-Ranges": "bytes",
     ETag: head.httpEtag,
@@ -91,7 +109,7 @@ publicRoutes.on(["GET", "HEAD"], "/f/:code/:lang", async (c) => {
 
   if (c.req.method === "HEAD") return new Response(null, { status, headers });
 
-  const obj = await c.env.MANUALS.get(manual.r2_key, range ? { range } : undefined);
+  const obj = await c.env.MANUALS.get(doc.r2_key, range ? { range } : undefined);
   if (!obj) return notAvailable(c.req.raw, "no-store");
   return new Response(obj.body, { status, headers });
 });

@@ -1,8 +1,11 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import type { Env, Lang } from "./config";
 
-export interface Manual {
+export interface Document {
+  id: number;
   lang: Lang;
+  title: string;
+  position: number;
   r2_key: string;
   original_name: string;
   size_bytes: number;
@@ -15,10 +18,11 @@ export interface Product {
   name: string;
   created_at: string;
   updated_at: string;
-  manuals: Manual[];
+  /** Ordered by language, then position. */
+  documents: Document[];
 }
 
-export interface NewManual {
+export interface NewFile {
   r2_key: string;
   original_name: string;
   size_bytes: number;
@@ -32,17 +36,34 @@ export interface User {
 
 type Sql = NeonQueryFunction<false, false>;
 
-// Products with their manuals as a JSON array, so a list is a single round trip.
+const DOCUMENT_FIELDS = `d.id, d.lang, d.title, d.position, d.r2_key, d.original_name, d.size_bytes, d.uploaded_at, d.uploaded_by`;
+
+// Products with their documents as a JSON array, so a list is a single round trip.
 const PRODUCT_COLUMNS = `
   p.code, p.name, p.created_at, p.updated_at,
   COALESCE(
     (SELECT json_agg(json_build_object(
-        'lang', m.lang, 'r2_key', m.r2_key, 'original_name', m.original_name,
-        'size_bytes', m.size_bytes, 'uploaded_at', m.uploaded_at, 'uploaded_by', m.uploaded_by
-      ) ORDER BY m.lang)
-     FROM manuals m WHERE m.product_code = p.code),
+        'id', d.id, 'lang', d.lang, 'title', d.title, 'position', d.position,
+        'r2_key', d.r2_key, 'original_name', d.original_name, 'size_bytes', d.size_bytes,
+        'uploaded_at', d.uploaded_at, 'uploaded_by', d.uploaded_by
+      ) ORDER BY d.lang, d.position, d.id)
+     FROM documents d WHERE d.product_code = p.code),
     '[]'::json
-  ) AS manuals`;
+  ) AS documents`;
+
+function toDocument(row: Record<string, any>): Document {
+  return {
+    id: Number(row.id),
+    lang: row.lang,
+    title: row.title,
+    position: Number(row.position),
+    r2_key: row.r2_key,
+    original_name: row.original_name,
+    size_bytes: Number(row.size_bytes),
+    uploaded_at: new Date(row.uploaded_at).toISOString(),
+    uploaded_by: row.uploaded_by ?? null,
+  };
+}
 
 function toProduct(row: Record<string, any>): Product {
   return {
@@ -50,10 +71,7 @@ function toProduct(row: Record<string, any>): Product {
     name: row.name,
     created_at: new Date(row.created_at).toISOString(),
     updated_at: new Date(row.updated_at).toISOString(),
-    manuals: (row.manuals as any[]).map((m) => ({
-      ...m,
-      uploaded_at: new Date(m.uploaded_at).toISOString(),
-    })),
+    documents: (row.documents as any[]).map(toDocument),
   };
 }
 
@@ -108,77 +126,122 @@ export class Db {
   }
 
   /**
-   * Deletes the product and its manual rows in one statement.
+   * Deletes the product and its documents in one statement.
    * Returns the R2 keys to clean up, or null if the product didn't exist.
    */
   async deleteProduct(code: string): Promise<string[] | null> {
     const rows = await this.sql`
-      WITH m AS (DELETE FROM manuals WHERE product_code = ${code} RETURNING r2_key),
+      WITH d AS (DELETE FROM documents WHERE product_code = ${code} RETURNING r2_key),
            p AS (DELETE FROM products WHERE code = ${code} RETURNING code)
       SELECT (SELECT count(*) FROM p)::int AS deleted,
-             COALESCE((SELECT array_agg(r2_key) FROM m), '{}') AS keys`;
+             COALESCE((SELECT array_agg(r2_key) FROM d), '{}') AS keys`;
     return rows[0].deleted === 1 ? (rows[0].keys as string[]) : null;
   }
 
-  async getManual(code: string, lang: Lang): Promise<Manual | null> {
-    const rows = await this.sql`
-      SELECT lang, r2_key, original_name, size_bytes, uploaded_at, uploaded_by
-      FROM manuals WHERE product_code = ${code} AND lang = ${lang}`;
-    if (!rows[0]) return null;
-    return { ...(rows[0] as Manual), uploaded_at: new Date(rows[0].uploaded_at).toISOString() };
+  // ---------- documents ----------
+  // Each write is a single round trip, which matters because the database is
+  // far from most Worker locations.
+
+  async getDocument(code: string, id: number): Promise<Document | null> {
+    const rows = await this.sql.query(
+      `SELECT ${DOCUMENT_FIELDS} FROM documents d WHERE d.product_code = $1 AND d.id = $2`,
+      [code, id],
+    );
+    return rows[0] ? toDocument(rows[0]) : null;
+  }
+
+  /** Adds a document at the end of its language's list. Returns null if the product doesn't exist. */
+  async createDocument(code: string, lang: Lang, title: string, f: NewFile): Promise<Document | null> {
+    const rows = await this.sql.query(
+      `WITH ins AS (
+         INSERT INTO documents (product_code, lang, title, position, r2_key, original_name, size_bytes, uploaded_by)
+         SELECT $1, $2, $3,
+                COALESCE((SELECT max(position) FROM documents WHERE product_code = $1 AND lang = $2), 0) + 1,
+                $4, $5, $6, $7
+         WHERE EXISTS (SELECT 1 FROM products WHERE code = $1)
+         RETURNING *
+       ), touch AS (
+         UPDATE products SET updated_at = now() WHERE code = $1 AND EXISTS (SELECT 1 FROM ins)
+       )
+       SELECT ${DOCUMENT_FIELDS} FROM ins d`,
+      [code, lang, title, f.r2_key, f.original_name, f.size_bytes, f.uploaded_by],
+    );
+    return rows[0] ? toDocument(rows[0]) : null;
+  }
+
+  /** Returns null if the document doesn't exist. */
+  async updateDocumentTitle(code: string, id: number, title: string): Promise<Document | null> {
+    const rows = await this.sql.query(
+      `WITH up AS (
+         UPDATE documents SET title = $3 WHERE product_code = $1 AND id = $2 RETURNING *
+       ), touch AS (
+         UPDATE products SET updated_at = now() WHERE code = $1 AND EXISTS (SELECT 1 FROM up)
+       )
+       SELECT ${DOCUMENT_FIELDS} FROM up d`,
+      [code, id, title],
+    );
+    return rows[0] ? toDocument(rows[0]) : null;
   }
 
   /**
-   * Inserts or replaces the manual row in a single round trip, which matters
-   * because the database is far from most Worker locations. Returns the
-   * updated product and the previous R2 key (to delete), or null if the
-   * product doesn't exist.
+   * Points the document at a new PDF. Returns the updated document and the
+   * previous R2 key (to delete), or null if the document doesn't exist.
    */
-  async upsertManual(
+  async replaceDocumentFile(
     code: string,
-    lang: Lang,
-    m: NewManual,
-  ): Promise<{ product: Product; oldKey: string | null } | null> {
+    id: number,
+    f: NewFile,
+  ): Promise<{ document: Document; oldKey: string } | null> {
     const rows = await this.sql.query(
-      `WITH old AS (
-         SELECT r2_key FROM manuals WHERE product_code = $1 AND lang = $2 FOR UPDATE
-       ), up AS (
-         INSERT INTO manuals (product_code, lang, r2_key, original_name, size_bytes, uploaded_by)
-         SELECT $1, $2, $3, $4, $5, $6 WHERE EXISTS (SELECT 1 FROM products WHERE code = $1)
-         ON CONFLICT (product_code, lang) DO UPDATE SET
-           r2_key = EXCLUDED.r2_key,
-           original_name = EXCLUDED.original_name,
-           size_bytes = EXCLUDED.size_bytes,
-           uploaded_by = EXCLUDED.uploaded_by,
-           uploaded_at = now()
-         RETURNING uploaded_at
+      // The FROM row is read before the update, so it still holds the old key.
+      `WITH up AS (
+         UPDATE documents d
+         SET r2_key = $3, original_name = $4, size_bytes = $5, uploaded_by = $6, uploaded_at = now()
+         FROM documents old
+         WHERE d.product_code = $1 AND d.id = $2 AND old.id = d.id
+         RETURNING d.*, old.r2_key AS old_key
        ), touch AS (
-         UPDATE products SET updated_at = now() WHERE code = $1 RETURNING updated_at
+         UPDATE products SET updated_at = now() WHERE code = $1 AND EXISTS (SELECT 1 FROM up)
        )
-       SELECT (SELECT r2_key FROM old) AS old_key,
-              (SELECT uploaded_at FROM up) AS new_uploaded_at,
-              (SELECT updated_at FROM touch) AS new_updated_at,
-              ${PRODUCT_COLUMNS}
-       FROM products p WHERE p.code = $1`,
-      [code, lang, m.r2_key, m.original_name, m.size_bytes, m.uploaded_by],
+       SELECT ${DOCUMENT_FIELDS}, d.old_key FROM up d`,
+      [code, id, f.r2_key, f.original_name, f.size_bytes, f.uploaded_by],
     );
-    const row = rows[0];
-    if (!row) return null;
+    return rows[0] ? { document: toDocument(rows[0]), oldKey: rows[0].old_key as string } : null;
+  }
 
-    // The product columns are read from the snapshot before the write, so
-    // apply the change here rather than spending another round trip.
-    const product = toProduct({ ...row, updated_at: row.new_updated_at });
-    const manual: Manual = {
-      lang,
-      r2_key: m.r2_key,
-      original_name: m.original_name,
-      size_bytes: m.size_bytes,
-      uploaded_at: new Date(row.new_uploaded_at).toISOString(),
-      uploaded_by: m.uploaded_by,
-    };
-    product.manuals = [...product.manuals.filter((x) => x.lang !== lang), manual]
-      .sort((a, b) => (a.lang < b.lang ? -1 : 1));
-    return { product, oldKey: (row.old_key as string | null) ?? null };
+  /** Removes one document. Returns its R2 key, or null if there was none. */
+  async deleteDocument(code: string, id: number): Promise<string | null> {
+    const rows = await this.sql`
+      WITH del AS (
+        DELETE FROM documents WHERE product_code = ${code} AND id = ${id} RETURNING r2_key
+      ), touch AS (
+        UPDATE products SET updated_at = now() WHERE code = ${code} AND EXISTS (SELECT 1 FROM del)
+      )
+      SELECT r2_key FROM del`;
+    return (rows[0]?.r2_key as string | undefined) ?? null;
+  }
+
+  /**
+   * Orders a language's documents as listed in `ids`. Documents not listed
+   * keep their place after the listed ones. Returns that language's
+   * documents in their new order (empty if the product has none).
+   */
+  async reorderDocuments(code: string, lang: Lang, ids: number[]): Promise<Document[]> {
+    const rows = await this.sql.query(
+      `WITH ranked AS (
+         SELECT id, row_number() OVER (
+                  ORDER BY array_position($3::int[], id) NULLS LAST, position, id
+                ) AS pos
+         FROM documents WHERE product_code = $1 AND lang = $2
+       ), up AS (
+         UPDATE documents d SET position = ranked.pos FROM ranked
+         WHERE d.id = ranked.id
+         RETURNING d.*
+       )
+       SELECT ${DOCUMENT_FIELDS} FROM up d ORDER BY d.position`,
+      [code, lang, ids],
+    );
+    return rows.map(toDocument);
   }
 
   // ---------- users ----------
@@ -241,13 +304,5 @@ export class Db {
       FROM used WHERE users.email = used.email
       RETURNING users.email`;
     return (rows[0]?.email as string | undefined) ?? null;
-  }
-
-  /** Removes one manual row. Returns its R2 key, or null if there was none. */
-  async deleteManual(code: string, lang: Lang): Promise<string | null> {
-    const rows = await this.sql`
-      DELETE FROM manuals WHERE product_code = ${code} AND lang = ${lang}
-      RETURNING r2_key`;
-    return (rows[0]?.r2_key as string | undefined) ?? null;
   }
 }

@@ -9,12 +9,14 @@
     me: null,
     products: [],
     current: null, // product shown in the manage view
-    // "CODE/lang" -> percent while an upload runs. Several can run at once,
-    // for different languages and products.
-    uploading: {},
+    lang: null, // language tab shown in the manage view
+    // Running uploads by id: { code, lang, docId (when replacing), title, pct }.
+    // Several can run at once, for different languages and products.
+    uploads: {},
+    dialog: null, // document dialog: { mode: "add" | "edit", lang, docId, file }
   };
 
-  const uploadKey = (code, lang) => code + "/" + lang;
+  let uploadSeq = 0;
 
   // ---------- helpers ----------
 
@@ -94,23 +96,42 @@
     if (state.current && state.current.code === product.code) state.current = product;
   }
 
+  const isCurrent = (code) => state.current && state.current.code === code;
+
+  const langOrder = (lang) => state.me.languages.findIndex((l) => l.code === lang);
+
+  function sortDocuments(docs) {
+    return docs.sort((a, b) => langOrder(a.lang) - langOrder(b.lang) || a.position - b.position || a.id - b.id);
+  }
+
+  function docsFor(product, lang) {
+    return product.documents.filter((d) => d.lang === lang);
+  }
+
   /**
-   * Applies a server response about one language only. With uploads running in
-   * parallel, responses can arrive out of order and each carries a snapshot of
-   * all manuals, so taking the whole product would undo a newer change.
+   * Applies a server response about one document only. With uploads running in
+   * parallel, responses can arrive out of order, so each one changes just its
+   * own document instead of replacing the whole product.
    */
-  function applyLangChange(code, lang, product) {
+  function mergeDocument(code, doc) {
     const local = state.products.find((p) => p.code === code);
-    if (!local) return upsertLocal(product);
-    const fresh = product.manuals.find((m) => m.lang === lang);
-    const manuals = local.manuals.filter((m) => m.lang !== lang);
-    if (fresh) manuals.push(fresh);
-    manuals.sort((a, b) => a.lang.localeCompare(b.lang));
-    upsertLocal({
-      ...local,
-      manuals,
-      updated_at: product.updated_at > local.updated_at ? product.updated_at : local.updated_at,
-    });
+    if (!local) return;
+    const documents = local.documents.filter((d) => d.id !== doc.id);
+    documents.push(doc);
+    upsertLocal({ ...local, documents: sortDocuments(documents) });
+  }
+
+  function dropDocument(code, id) {
+    const local = state.products.find((p) => p.code === code);
+    if (local) upsertLocal({ ...local, documents: local.documents.filter((d) => d.id !== id) });
+  }
+
+  /** Replaces one language's documents, e.g. after reordering. */
+  function setLangDocuments(code, lang, docs) {
+    const local = state.products.find((p) => p.code === code);
+    if (!local) return;
+    const others = local.documents.filter((d) => d.lang !== lang);
+    upsertLocal({ ...local, documents: sortDocuments(others.concat(docs)) });
   }
 
   // ---------- routing ----------
@@ -130,6 +151,10 @@
     $("#list-view").hidden = false;
     document.title = "QR manuals – UMI Europe";
     renderList();
+  }
+
+  function countLabel(n) {
+    return n === 0 ? "no documents" : n === 1 ? "1 document" : n + " documents";
   }
 
   function renderList() {
@@ -152,13 +177,14 @@
 
     const rows = list
       .map((p) => {
-        const have = new Set(p.manuals.map((m) => m.lang));
         const badges = state.me.languages
           .map((l) => {
-            const on = have.has(l.code);
+            const n = docsFor(p, l.code).length;
+            const label = esc(l.english + ": " + countLabel(n));
             return (
-              '<span class="badge' + (on ? " on" : "") + '" title="' + esc(l.english + (on ? ": manual uploaded" : ": no manual")) + '">' +
-              l.code.toUpperCase() + '<span class="visually-hidden">' + (on ? " uploaded" : " missing") + "</span></span>"
+              '<span class="badge' + (n ? " on" : "") + '" title="' + label + '">' +
+              l.code.toUpperCase() + (n > 1 ? '<span class="count" aria-hidden="true">' + n + "</span>" : "") +
+              '<span class="visually-hidden"> ' + label + "</span></span>"
             );
           })
           .join("");
@@ -178,7 +204,7 @@
 
     el.innerHTML =
       '<table class="table"><thead><tr><th scope="col">Code</th><th scope="col">Name</th>' +
-      '<th scope="col">Manuals</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>' +
+      '<th scope="col">Documents</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>' +
       "<tbody>" + rows + "</tbody></table>";
   }
 
@@ -239,6 +265,11 @@
         return;
       }
     }
+    // Open on the first language with documents, unless one was picked before.
+    if (!state.current || state.current.code !== product.code) {
+      const withDocs = state.me.languages.find((l) => docsFor(product, l.code).length > 0);
+      state.lang = (withDocs || state.me.languages[0]).code;
+    }
     state.current = product;
     $("#list-view").hidden = true;
     $("#product-view").hidden = false;
@@ -259,52 +290,81 @@
     $("#p-qr").alt = "QR code for " + p.short_url;
     $("#dl-svg").href = "/api/products/" + enc + "/qr.svg?download";
     $("#dl-svg").setAttribute("download", "UMI-QR-" + p.code + ".svg");
-    renderManuals();
+    renderDocuments();
   }
 
-  function renderManuals() {
+  function uploadsFor(code, lang) {
+    return Object.entries(state.uploads).filter(([, u]) => u.code === code && u.lang === lang);
+  }
+
+  function progressRow(id, u) {
+    return (
+      '<li class="doc" data-upload="' + id + '">' +
+      '<div class="doc-main"><div class="doc-title">' + esc(u.title) + "</div>" +
+      '<div class="progress-label">' + progressText(u.pct) + "</div>" +
+      '<div class="progress" role="progressbar" aria-label="Upload progress for ' + esc(u.title) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + u.pct + '"><span style="width:' + u.pct + '%"></span></div>' +
+      "</div></li>"
+    );
+  }
+
+  function renderDocuments() {
     const p = state.current;
-    const byLang = Object.fromEntries(p.manuals.map((m) => [m.lang, m]));
-    $("#manuals").innerHTML = state.me.languages
+    const enc = encodeURIComponent(p.code);
+
+    $("#lang-tabs").innerHTML = state.me.languages
       .map((l) => {
-        const m = byLang[l.code];
-        const pct = state.uploading[uploadKey(p.code, l.code)];
-        const head =
-          '<div class="manual-head"><span class="badge' + (m ? " on" : "") + '">' + l.code.toUpperCase() + "</span>" +
-          "<h3>" + esc(l.english) + "</h3>" +
-          (m ? '<span class="status-ok">Uploaded</span>' : '<span class="status-missing">No manual</span>') +
-          "</div>";
-
-        if (pct !== undefined) {
-          return (
-            '<div class="manual" data-lang="' + l.code + '">' + head +
-            '<div class="progress-label">' + progressText(pct) + "</div>" +
-            '<div class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><span style="width:' + pct + '%"></span></div>' +
-            "</div>"
-          );
-        }
-
-        const input = '<input type="file" accept="application/pdf,.pdf" hidden data-file="' + l.code + '">';
-        if (m) {
-          return (
-            '<div class="manual" data-lang="' + l.code + '" data-drop="' + l.code + '">' + head +
-            '<div class="file">' + esc(m.original_name) + "</div>" +
-            '<div class="meta">' + formatSize(m.size_bytes) + " · uploaded " + formatDate(m.uploaded_at) + "</div>" +
-            '<div class="row">' +
-            '<a class="btn small" href="/f/' + encodeURIComponent(p.code) + "/" + l.code + '" target="_blank" rel="noopener">View</a>' +
-            '<button class="btn small" type="button" data-action="replace" data-lang="' + l.code + '">Replace</button>' +
-            '<button class="btn small danger-btn" type="button" data-action="remove" data-lang="' + l.code + '">Remove</button>' +
-            "</div>" + input + "</div>"
-          );
-        }
+        const n = docsFor(p, l.code).length;
+        const on = l.code === state.lang;
         return (
-          '<div class="manual" data-lang="' + l.code + '">' + head +
-          '<div class="drop" data-drop="' + l.code + '">' +
-          '<button class="btn primary small" type="button" data-action="upload" data-lang="' + l.code + '">Upload PDF</button>' +
-          "<div>or drag a PDF here</div></div>" + input + "</div>"
+          '<button type="button" role="tab" class="lang-tab" id="tab-' + l.code + '" data-tab="' + l.code + '"' +
+          ' aria-selected="' + on + '" aria-controls="docs-panel" tabindex="' + (on ? 0 : -1) + '">' +
+          '<span class="badge' + (n ? " on" : "") + '">' + l.code.toUpperCase() + "</span>" +
+          '<span class="lang-name">' + esc(l.english) + "</span>" +
+          '<span class="lang-count">' + n + '<span class="visually-hidden"> ' + (n === 1 ? "document" : "documents") + "</span></span>" +
+          "</button>"
         );
       })
       .join("");
+
+    const l = langInfo(state.lang);
+    const docs = docsFor(p, state.lang);
+    const running = uploadsFor(p.code, state.lang);
+    const replacing = Object.fromEntries(running.filter(([, u]) => u.docId).map(([id, u]) => [u.docId, id]));
+
+    const rows = docs.map((d, i) => {
+      if (replacing[d.id]) return progressRow(replacing[d.id], state.uploads[replacing[d.id]]);
+      const t = esc(d.title);
+      return (
+        '<li class="doc">' +
+        '<div class="doc-main">' +
+        '<div class="doc-title">' + t + "</div>" +
+        '<div class="meta">' + esc(d.original_name) + " · " + formatSize(d.size_bytes) + " · uploaded " + formatDate(d.uploaded_at) + "</div>" +
+        "</div>" +
+        '<div class="row">' +
+        '<button class="btn small icon" type="button" data-action="up" data-id="' + d.id + '"' + (i === 0 ? " disabled" : "") + ' aria-label="Move ' + t + ' up" title="Move up">↑</button>' +
+        '<button class="btn small icon" type="button" data-action="down" data-id="' + d.id + '"' + (i === docs.length - 1 ? " disabled" : "") + ' aria-label="Move ' + t + ' down" title="Move down">↓</button>' +
+        '<a class="btn small" href="/f/' + enc + "/" + d.id + '" target="_blank" rel="noopener">View</a>' +
+        '<button class="btn small" type="button" data-action="edit" data-id="' + d.id + '">Edit</button>' +
+        '<button class="btn small danger-btn" type="button" data-action="remove" data-id="' + d.id + '">Remove</button>' +
+        "</div></li>"
+      );
+    });
+    for (const [id, u] of running) if (!u.docId) rows.push(progressRow(id, u));
+
+    $("#docs-panel").setAttribute("aria-labelledby", "tab-" + state.lang);
+    $("#docs-panel").innerHTML =
+      (rows.length
+        ? '<ol class="docs">' + rows.join("") + "</ol>"
+        : '<p class="docs-empty">No ' + esc(l.english) + " documents yet. Visitors won't see " + esc(l.english) + " as an option.</p>") +
+      '<div class="drop" data-drop>' +
+      '<button class="btn primary small" type="button" data-action="add">Add ' + esc(l.english) + " document</button>" +
+      "<div>or drag a PDF here</div></div>";
+  }
+
+  function selectLang(lang) {
+    state.lang = lang;
+    renderDocuments();
+    $("#tab-" + lang).focus();
   }
 
   async function saveName(e) {
@@ -366,30 +426,104 @@
     }
   }
 
-  // ---------- manuals: upload, replace, remove ----------
+  // ---------- documents: add, edit, reorder, remove ----------
 
-  async function handleFile(lang, file) {
-    const p = state.current;
-    if (!file) return;
-    const l = langInfo(lang);
-    if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") {
-      toast("This file isn't a PDF. Upload a .pdf file.", "error");
-      return;
-    }
+  /** Returns an error message, or null when the file can be uploaded. */
+  function fileProblem(file) {
+    if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") return "This file isn't a PDF. Upload a .pdf file.";
     if (file.size > state.me.max_upload_bytes) {
-      toast("This file is larger than " + Math.round(state.me.max_upload_bytes / 1024 / 1024) + " MB. Upload a smaller PDF.", "error");
+      return "This file is larger than " + Math.round(state.me.max_upload_bytes / 1024 / 1024) + " MB. Upload a smaller PDF.";
+    }
+    return null;
+  }
+
+  /** "Handleiding_X200.pdf" -> "Handleiding X200": a starting point for the title. */
+  function titleFromFilename(name) {
+    return name.replace(/\.pdf$/i, "").replace(/_+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+  }
+
+  function setDialogFile(file) {
+    state.dialog.file = file || null;
+    $("#doc-error").textContent = "";
+    if (file && !$("#doc-title").value.trim()) $("#doc-title").value = titleFromFilename(file.name);
+  }
+
+  function openDocDialog(mode, opts = {}) {
+    const p = state.current;
+    const doc = mode === "edit" ? p.documents.find((d) => d.id === opts.docId) : null;
+    if (mode === "edit" && !doc) return;
+    const lang = doc ? doc.lang : state.lang;
+    const l = langInfo(lang);
+    const maxMb = Math.round(state.me.max_upload_bytes / 1024 / 1024);
+    state.dialog = { mode, lang, docId: doc ? doc.id : null, file: null };
+
+    $("#doc-form").reset();
+    $("#doc-error").textContent = "";
+    $("#doc-dialog-title").textContent = doc ? "Edit document" : "Add document";
+    $("#doc-dialog-lang").innerHTML = '<span class="badge on">' + l.code.toUpperCase() + "</span> " + esc(l.english);
+    $("#doc-title").value = doc ? doc.title : "";
+    $("#doc-file").required = !doc;
+    $("#doc-file-label").textContent = doc ? "Replace PDF (optional)" : "PDF";
+    $("#doc-file-hint").textContent = doc
+      ? "Current file: " + doc.original_name + ". Choose a new PDF only to replace it."
+      : "Up to " + maxMb + " MB.";
+    $("#doc-submit").textContent = doc ? "Save" : "Add document";
+
+    // A PDF dropped on the list comes along with the dialog.
+    if (opts.file) {
+      const dt = new DataTransfer();
+      dt.items.add(opts.file);
+      $("#doc-file").files = dt.files;
+      setDialogFile(opts.file);
+    }
+    $("#doc-dialog").showModal();
+    $("#doc-title").focus();
+    if (opts.file) $("#doc-title").select();
+  }
+
+  async function submitDoc(e) {
+    e.preventDefault();
+    const p = state.current;
+    const d = state.dialog;
+    const title = $("#doc-title").value.trim();
+    const file = d.file;
+    const problem = !title
+      ? "Enter a title for the document."
+      : d.mode === "add" && !file
+        ? "Choose a PDF to upload."
+        : file && fileProblem(file);
+    if (problem) {
+      $("#doc-error").textContent = problem;
       return;
     }
-    const existing = p.manuals.find((m) => m.lang === lang);
-    if (existing) {
-      const ok = await confirmDialog({
-        title: "Replace " + l.english + " manual?",
-        body: "“" + existing.original_name + "” will be replaced by “" + file.name + "”. Printed QR codes will open the new file.",
-        ok: "Replace",
-      });
-      if (!ok) return;
+
+    if (d.mode === "add") {
+      $("#doc-dialog").close();
+      upload({ code: p.code, lang: d.lang, title, file });
+      return;
     }
-    upload(p.code, lang, file, !!existing);
+
+    const doc = p.documents.find((x) => x.id === d.docId);
+    if (!doc) {
+      $("#doc-dialog").close();
+      return;
+    }
+    const btn = $("#doc-submit");
+    btn.disabled = true;
+    try {
+      if (title !== doc.title) {
+        const res = await api("PATCH", "/products/" + encodeURIComponent(p.code) + "/documents/" + doc.id, { title });
+        mergeDocument(p.code, res.document);
+      }
+      $("#doc-dialog").close();
+      if (file) upload({ code: p.code, lang: doc.lang, title, file, docId: doc.id });
+      else if (title !== doc.title) toast("Title saved.");
+      if (isCurrent(p.code)) renderDocuments();
+    } catch (err) {
+      $("#doc-error").textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   // 100 means the file is sent and the server is storing it.
@@ -397,61 +531,104 @@
     return pct >= 100 ? "Saving…" : "Uploading… " + pct + "%";
   }
 
-  function upload(code, lang, file, replacing) {
-    const l = langInfo(lang);
-    const key = uploadKey(code, lang);
-    state.uploading[key] = 0;
-    renderManuals();
+  /** Adds a document, or replaces the PDF of document `docId`. */
+  function upload({ code, lang, title, file, docId }) {
+    const id = "u" + ++uploadSeq;
+    state.uploads[id] = { code, lang, title, docId: docId || null, pct: 0 };
+    if (isCurrent(code)) renderDocuments();
 
+    const enc = encodeURIComponent(code);
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", "/api/products/" + encodeURIComponent(code) + "/manuals/" + lang);
+    if (docId) {
+      xhr.open("PUT", "/api/products/" + enc + "/documents/" + docId + "/file");
+    } else {
+      xhr.open("POST", "/api/products/" + enc + "/documents?lang=" + lang);
+      xhr.setRequestHeader("X-Title", encodeURIComponent(title));
+    }
     xhr.setRequestHeader("Content-Type", "application/pdf");
     xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name));
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
       const pct = Math.round((e.loaded / e.total) * 100);
-      state.uploading[key] = pct;
-      if (!state.current || state.current.code !== code) return;
-      const bar = document.querySelector('.manual[data-lang="' + lang + '"] .progress');
+      state.uploads[id].pct = pct;
+      const bar = document.querySelector('[data-upload="' + id + '"] .progress');
       if (bar) {
         bar.firstElementChild.style.width = pct + "%";
         bar.setAttribute("aria-valuenow", pct);
         bar.previousElementSibling.textContent = progressText(pct);
       }
     };
-    const done = (error, product) => {
-      delete state.uploading[key];
-      if (product) applyLangChange(code, lang, product);
-      if (state.current && state.current.code === code) renderManuals();
+    const done = (error, doc) => {
+      delete state.uploads[id];
+      if (doc) mergeDocument(code, doc);
+      if (isCurrent(code)) renderDocuments();
       if (error) toast(error, "error");
-      else toast(l.english + " manual " + (replacing ? "replaced." : "uploaded."));
+      else toast("“" + title + "” " + (docId ? "replaced." : "added."));
     };
     xhr.onload = () => {
       let data = {};
       try {
         data = JSON.parse(xhr.responseText);
       } catch {}
-      if (xhr.status >= 200 && xhr.status < 300) done(null, data.product);
+      if (xhr.status >= 200 && xhr.status < 300) done(null, data.document);
       else done(data.error || "Upload failed (" + xhr.status + "). Try again.");
     };
     xhr.onerror = () => done("Upload failed. Check your internet connection and try again.");
     xhr.send(file);
   }
 
-  async function removeManual(lang) {
+  async function moveDocument(id, step) {
     const p = state.current;
-    const l = langInfo(lang);
+    const doc = p.documents.find((d) => d.id === id);
+    if (!doc) return;
+    const docs = docsFor(p, doc.lang);
+    const i = docs.indexOf(doc);
+    const j = i + step;
+    if (j < 0 || j >= docs.length) return;
+    [docs[i], docs[j]] = [docs[j], docs[i]];
+
+    // Show the new order right away; the server's answer confirms it.
+    setLangDocuments(p.code, doc.lang, docs.map((d, k) => ({ ...d, position: k + 1 })));
+    renderDocuments();
+    // Keep focus on the moved document, on whichever arrow still applies.
+    const btn = (action) => document.querySelector('[data-action="' + action + '"][data-id="' + id + '"]');
+    const same = btn(step < 0 ? "up" : "down");
+    (same && !same.disabled ? same : btn(step < 0 ? "down" : "up")).focus();
+
+    try {
+      const res = await api("PUT", "/products/" + encodeURIComponent(p.code) + "/documents/order", {
+        lang: doc.lang,
+        ids: docs.map((d) => d.id),
+      });
+      setLangDocuments(p.code, doc.lang, res.documents);
+    } catch (err) {
+      toast(err.message, "error");
+      try {
+        upsertLocal((await api("GET", "/products/" + encodeURIComponent(p.code))).product);
+      } catch {}
+      if (isCurrent(p.code)) renderDocuments();
+    }
+  }
+
+  async function removeDocument(id) {
+    const p = state.current;
+    const doc = p.documents.find((d) => d.id === id);
+    if (!doc) return;
+    const l = langInfo(doc.lang);
+    const last = docsFor(p, doc.lang).length === 1;
     const ok = await confirmDialog({
-      title: "Remove " + l.english + " manual?",
-      body: "Printed QR codes will no longer offer the " + l.english + " manual until you upload a new one.",
+      title: "Remove “" + doc.title + "”?",
+      body: last
+        ? "This is the only " + l.english + " document. Printed QR codes will no longer offer " + l.english + " until you add one."
+        : "Printed QR codes will no longer list this document.",
       ok: "Remove",
     });
     if (!ok) return;
     try {
-      const { product } = await api("DELETE", "/products/" + encodeURIComponent(p.code) + "/manuals/" + lang);
-      applyLangChange(p.code, lang, product);
-      if (state.current && state.current.code === p.code) renderManuals();
-      toast(l.english + " manual removed.");
+      await api("DELETE", "/products/" + encodeURIComponent(p.code) + "/documents/" + id);
+      dropDocument(p.code, id);
+      if (isCurrent(p.code)) renderDocuments();
+      toast("“" + doc.title + "” removed.");
     } catch (err) {
       toast(err.message, "error");
     }
@@ -487,6 +664,27 @@
 
   // ---------- wiring ----------
 
+  /** Highlights a drop zone while a file is dragged over it and calls onFile on drop. */
+  function dropTarget(container, selector, onFile) {
+    container.addEventListener("dragover", (e) => {
+      const zone = e.target.closest(selector);
+      if (!zone) return;
+      e.preventDefault();
+      zone.classList.add("over");
+    });
+    container.addEventListener("dragleave", (e) => {
+      const zone = e.target.closest(selector);
+      if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove("over");
+    });
+    container.addEventListener("drop", (e) => {
+      const zone = e.target.closest(selector);
+      if (!zone) return;
+      e.preventDefault();
+      zone.classList.remove("over");
+      if (e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0], e.dataTransfer.files);
+    });
+  }
+
   function wire() {
     window.addEventListener("hashchange", route);
     $("#search").addEventListener("input", renderList);
@@ -509,44 +707,45 @@
       if (e.target.closest('[data-action="add"]')) openAdd();
     });
 
-    const manuals = $("#manuals");
-    manuals.addEventListener("click", (e) => {
+    const tabs = $("#lang-tabs");
+    tabs.addEventListener("click", (e) => {
+      const tab = e.target.closest("[data-tab]");
+      if (tab) selectLang(tab.dataset.tab);
+    });
+    // Arrow keys move between tabs, as in any tab list.
+    tabs.addEventListener("keydown", (e) => {
+      const codes = state.me.languages.map((l) => l.code);
+      const i = codes.indexOf(state.lang);
+      const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: codes.length - 1 }[e.key];
+      if (next === undefined) return;
+      e.preventDefault();
+      selectLang(codes[(next + codes.length) % codes.length]);
+    });
+
+    const panel = $("#docs-panel");
+    panel.addEventListener("click", (e) => {
       const btn = e.target.closest("[data-action]");
       if (!btn) return;
-      const lang = btn.dataset.lang;
-      if (btn.dataset.action === "upload" || btn.dataset.action === "replace") {
-        manuals.querySelector('[data-file="' + lang + '"]').click();
-      } else if (btn.dataset.action === "remove") {
-        removeManual(lang);
-      }
+      const id = Number(btn.dataset.id);
+      const action = btn.dataset.action;
+      if (action === "add") openDocDialog("add");
+      else if (action === "edit") openDocDialog("edit", { docId: id });
+      else if (action === "up") moveDocument(id, -1);
+      else if (action === "down") moveDocument(id, 1);
+      else if (action === "remove") removeDocument(id);
     });
-    manuals.addEventListener("change", (e) => {
-      const input = e.target.closest("[data-file]");
-      if (input) {
-        handleFile(input.dataset.file, input.files[0]);
-        input.value = "";
-      }
+    dropTarget(panel, "[data-drop]", (file) => openDocDialog("add", { file }));
+
+    $("#doc-form").addEventListener("submit", submitDoc);
+    $("#doc-file").addEventListener("change", (e) => setDialogFile(e.target.files[0]));
+    dropTarget($("#doc-dialog"), "#doc-drop", (file, files) => {
+      $("#doc-file").files = files;
+      setDialogFile(file);
     });
-    manuals.addEventListener("dragover", (e) => {
-      const zone = e.target.closest("[data-drop]");
-      if (!zone) return;
-      e.preventDefault();
-      zone.classList.add("over");
-    });
-    manuals.addEventListener("dragleave", (e) => {
-      const zone = e.target.closest("[data-drop]");
-      if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove("over");
-    });
-    manuals.addEventListener("drop", (e) => {
-      const zone = e.target.closest("[data-drop]");
-      if (!zone) return;
-      e.preventDefault();
-      zone.classList.remove("over");
-      handleFile(zone.dataset.drop, e.dataTransfer.files[0]);
-    });
+
     // Closing or reloading the page cancels running uploads, so ask first.
     window.addEventListener("beforeunload", (e) => {
-      if (Object.keys(state.uploading).length > 0) e.preventDefault();
+      if (Object.keys(state.uploads).length > 0) e.preventDefault();
     });
     // Dropping a file outside a drop zone shouldn't navigate away from the admin.
     window.addEventListener("dragover", (e) => e.preventDefault());

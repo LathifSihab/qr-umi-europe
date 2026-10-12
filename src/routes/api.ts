@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import {
+  DOCUMENT_TITLE_MAX,
   LANGUAGES,
   MAX_UPLOAD_BYTES,
   PRODUCT_CODE_RE,
@@ -9,9 +10,9 @@ import {
   type Env,
 } from "../config";
 import { afterResponse } from "../background";
-import { Db, type Product } from "../db";
+import { Db, type Document, type Product } from "../db";
 import { qrSvg, shortUrl } from "../qr";
-import { deleteObjects, putManual } from "../storage";
+import { deleteObjects, putDocument } from "../storage";
 
 type AppEnv = { Bindings: Env; Variables: { email: string } };
 
@@ -40,7 +41,11 @@ apiRoutes.use("*", async (c, next) => {
   c.header("Cache-Control", "no-store");
 });
 
-/** Public shape of a product: R2 keys stay internal. */
+/** Public shape of a document: R2 keys stay internal. */
+function presentDocument({ r2_key: _key, ...d }: Document) {
+  return d;
+}
+
 function present(p: Product, env: Env) {
   return {
     code: p.code,
@@ -48,7 +53,7 @@ function present(p: Product, env: Env) {
     short_url: shortUrl(env.PUBLIC_BASE_URL, p.code),
     created_at: p.created_at,
     updated_at: p.updated_at,
-    manuals: p.manuals.map(({ r2_key: _key, ...m }) => m),
+    documents: p.documents.map(presentDocument),
   };
 }
 
@@ -57,6 +62,35 @@ function cleanName(value: unknown): string {
   if (!name) throw new ApiError(400, "Enter a product name.");
   if (name.length > PRODUCT_NAME_MAX) throw new ApiError(400, `Keep the product name under ${PRODUCT_NAME_MAX} characters.`);
   return name;
+}
+
+function cleanTitle(value: unknown): string {
+  const title = typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ").trim() : "";
+  if (!title) throw new ApiError(400, "Enter a title for the document.");
+  if (title.length > DOCUMENT_TITLE_MAX) throw new ApiError(400, `Keep the title under ${DOCUMENT_TITLE_MAX} characters.`);
+  return title;
+}
+
+/** Decodes a URI-encoded request header (non-ASCII text can't go in a header as is). */
+function decodedHeader(value: string | undefined): string {
+  try {
+    return decodeURIComponent(value ?? "");
+  } catch {
+    return value ?? "";
+  }
+}
+
+function documentId(value: string): number {
+  if (!/^\d{1,9}$/.test(value)) throw documentGone();
+  return Number(value);
+}
+
+function documentGone() {
+  return new ApiError(404, "This document doesn't exist. It may have been removed.");
+}
+
+function productGone() {
+  return new ApiError(404, "This product doesn't exist. It may have been deleted.");
 }
 
 async function readJson(req: Request): Promise<Record<string, unknown>> {
@@ -77,7 +111,7 @@ function langParam(value: string) {
 
 async function requireProduct(db: Db, code: string): Promise<Product> {
   const product = await db.getProduct(normalizeCode(code));
-  if (!product) throw new ApiError(404, "This product doesn't exist. It may have been deleted.");
+  if (!product) throw productGone();
   return product;
 }
 
@@ -114,15 +148,20 @@ function startsWithPdfMagic(chunks: Uint8Array[]): boolean {
   return false;
 }
 
-function cleanFilename(header: string | undefined, code: string, lang: string): string {
-  let name = "";
-  try {
-    name = decodeURIComponent(header ?? "");
-  } catch {
-    name = header ?? "";
-  }
-  name = name.replace(/[\u0000-\u001f\u007f]/g, "").replace(/^.*[\\/]/, "").trim().slice(0, 255);
-  return name || `${code}-${lang}.pdf`;
+function cleanFilename(header: string | undefined, code: string): string {
+  const name = decodedHeader(header).replace(/[\u0000-\u001f\u007f]/g, "").replace(/^.*[\\/]/, "").trim().slice(0, 255);
+  return name || `${code}.pdf`;
+}
+
+/** Reads and checks the uploaded PDF, then stores it in R2 under a fresh key. */
+async function storeUpload(c: { req: { raw: Request; header(name: string): string | undefined }; env: Env }, code: string) {
+  const declared = Number(c.req.header("Content-Length") ?? "0");
+  if (declared > MAX_UPLOAD_BYTES) throw tooLarge();
+  if (!c.req.raw.body) throw new ApiError(400, "No file received. Choose a PDF and try again.");
+
+  const chunks = await readLimited(c.req.raw.body, MAX_UPLOAD_BYTES);
+  if (!startsWithPdfMagic(chunks)) throw new ApiError(400, "This file isn't a PDF. Upload a .pdf file.");
+  return putDocument(c.env.MANUALS, code, new Blob(chunks));
 }
 
 apiRoutes.get("/me", (c) => c.json({
@@ -160,38 +199,81 @@ apiRoutes.patch("/products/:code", async (c) => {
   const db = Db.from(c.env);
   const code = normalizeCode(c.req.param("code"));
   const name = cleanName((await readJson(c.req.raw)).name);
-  if (!(await db.updateProductName(code, name))) throw new ApiError(404, "This product doesn't exist. It may have been deleted.");
+  if (!(await db.updateProductName(code, name))) throw productGone();
   return c.json({ product: present((await db.getProduct(code))!, c.env) });
 });
 
 apiRoutes.delete("/products/:code", async (c) => {
   const keys = await Db.from(c.env).deleteProduct(normalizeCode(c.req.param("code")));
-  if (keys === null) throw new ApiError(404, "This product doesn't exist. It may have been deleted.");
+  if (keys === null) throw productGone();
   await afterResponse(c, deleteObjects(c.env.MANUALS, keys));
   return c.json({ deleted: true });
 });
 
-apiRoutes.put("/products/:code/manuals/:lang", async (c) => {
-  // No separate existence check up front: upsertManual reports a missing
-  // product in the same round trip that saves the manual.
+// ---------- documents ----------
+// Uploads store the new R2 object first, then point the database at it, then
+// remove any old object. A missing product or document is reported by the
+// same round trip that saves, so there's no separate existence check.
+
+apiRoutes.post("/products/:code/documents", async (c) => {
   const db = Db.from(c.env);
   const code = normalizeCode(c.req.param("code"));
-  const lang = langParam(c.req.param("lang"));
+  const lang = langParam(c.req.query("lang") ?? "");
+  const title = cleanTitle(decodedHeader(c.req.header("X-Title")));
 
-  const declared = Number(c.req.header("Content-Length") ?? "0");
-  if (declared > MAX_UPLOAD_BYTES) throw tooLarge();
-  if (!c.req.raw.body) throw new ApiError(400, "No file received. Choose a PDF and try again.");
-
-  const chunks = await readLimited(c.req.raw.body, MAX_UPLOAD_BYTES);
-  if (!startsWithPdfMagic(chunks)) throw new ApiError(400, "This file isn't a PDF. Upload a .pdf file.");
-
-  // New object first, then point the database at it, then remove the old object.
-  const { key, size } = await putManual(c.env.MANUALS, code, lang, new Blob(chunks));
-  let saved: Awaited<ReturnType<Db["upsertManual"]>>;
+  const { key, size } = await storeUpload(c, code);
+  let document: Document | null;
   try {
-    saved = await db.upsertManual(code, lang, {
+    document = await db.createDocument(code, lang, title, {
       r2_key: key,
-      original_name: cleanFilename(c.req.header("X-Filename"), code, lang),
+      original_name: cleanFilename(c.req.header("X-Filename"), code),
+      size_bytes: size,
+      uploaded_by: c.get("email"),
+    });
+  } catch (err) {
+    await afterResponse(c, deleteObjects(c.env.MANUALS, [key]));
+    throw err;
+  }
+  if (!document) {
+    await afterResponse(c, deleteObjects(c.env.MANUALS, [key]));
+    throw productGone();
+  }
+  return c.json({ document: presentDocument(document) }, 201);
+});
+
+// Registered before "/:id" routes so "order" isn't read as an id.
+apiRoutes.put("/products/:code/documents/order", async (c) => {
+  const code = normalizeCode(c.req.param("code"));
+  const body = await readJson(c.req.raw);
+  const lang = langParam(typeof body.lang === "string" ? body.lang : "");
+  const ids = Array.isArray(body.ids) ? body.ids : null;
+  if (!ids || !ids.every((id) => Number.isInteger(id) && id > 0 && id < 1e9)) {
+    throw new ApiError(400, "Send the document ids in their new order.");
+  }
+  const documents = await Db.from(c.env).reorderDocuments(code, lang, ids as number[]);
+  return c.json({ documents: documents.map(presentDocument) });
+});
+
+apiRoutes.patch("/products/:code/documents/:id", async (c) => {
+  const code = normalizeCode(c.req.param("code"));
+  const id = documentId(c.req.param("id"));
+  const title = cleanTitle((await readJson(c.req.raw)).title);
+  const document = await Db.from(c.env).updateDocumentTitle(code, id, title);
+  if (!document) throw documentGone();
+  return c.json({ document: presentDocument(document) });
+});
+
+apiRoutes.put("/products/:code/documents/:id/file", async (c) => {
+  const db = Db.from(c.env);
+  const code = normalizeCode(c.req.param("code"));
+  const id = documentId(c.req.param("id"));
+
+  const { key, size } = await storeUpload(c, code);
+  let saved: Awaited<ReturnType<Db["replaceDocumentFile"]>>;
+  try {
+    saved = await db.replaceDocumentFile(code, id, {
+      r2_key: key,
+      original_name: cleanFilename(c.req.header("X-Filename"), code),
       size_bytes: size,
       uploaded_by: c.get("email"),
     });
@@ -201,22 +283,20 @@ apiRoutes.put("/products/:code/manuals/:lang", async (c) => {
   }
   if (!saved) {
     await afterResponse(c, deleteObjects(c.env.MANUALS, [key]));
-    throw new ApiError(404, "This product doesn't exist. It may have been deleted.");
+    throw documentGone();
   }
-  if (saved.oldKey) await afterResponse(c, deleteObjects(c.env.MANUALS, [saved.oldKey]));
-
-  return c.json({ product: present(saved.product, c.env) });
+  await afterResponse(c, deleteObjects(c.env.MANUALS, [saved.oldKey]));
+  return c.json({ document: presentDocument(saved.document) });
 });
 
-apiRoutes.delete("/products/:code/manuals/:lang", async (c) => {
-  const db = Db.from(c.env);
+apiRoutes.delete("/products/:code/documents/:id", async (c) => {
   const code = normalizeCode(c.req.param("code"));
-  const lang = langParam(c.req.param("lang"));
-  const key = await db.deleteManual(code, lang);
-  if (!key) throw new ApiError(404, "There's no manual in this language to remove.");
+  const key = await Db.from(c.env).deleteDocument(code, documentId(c.req.param("id")));
+  if (!key) throw documentGone();
   await afterResponse(c, deleteObjects(c.env.MANUALS, [key]));
-  return c.json({ product: present((await requireProduct(db, code)), c.env) });
+  return c.json({ deleted: true });
 });
+
 
 apiRoutes.get("/products/:code/qr.svg", async (c) => {
   const { code } = await requireProduct(Db.from(c.env), c.req.param("code"));
