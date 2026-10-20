@@ -15,15 +15,15 @@
   // Local values live in .dev.vars (Neon dev branch).
   "vars": {
     "ENVIRONMENT": "production",
-    "PUBLIC_BASE_URL": "https://qr-umi-europe.goosebumpsevents.workers.dev",
+    "PUBLIC_BASE_URL": "https://qr.umi-europe.com",
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": "",
     // Sender for password reset emails; the domain must be verified in Resend.
     // drpbuildlab.com until umi-europe.com is verified there.
     "MAIL_FROM": "UMI QR manuals <noreply@drpbuildlab.com>"
   },
-  // Custom domain disabled until umi-europe.com is an active zone on this account; serving on workers.dev meanwhile.
-  // Restore: "routes": [{ "pattern": "qr.umi-europe.com", "custom_domain": true }]
+  "routes": [{ "pattern": "qr.umi-europe.com", "custom_domain": true }],
+  // workers.dev stays on so QR codes printed for the demo keep working.
   "workers_dev": true,
   // Run the Worker near its backends (Neon in Frankfurt, R2 in Western Europe) instead of
   // near the visitor: admin requests make several database and storage calls each.
