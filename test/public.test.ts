@@ -89,6 +89,16 @@ describe("GET /m/:code", () => {
     expect(fallback).toContain(`href="/f/${code}/${ids[0]}"`);
   });
 
+  it("shows the product name in the chosen language, else the default name", async () => {
+    const { code } = await createWithDocuments(["en", "nl", "de"]);
+    await db.updateProductName(code, { translations: { nl: "Testproduct <i>" } });
+    const nl = await (await call(`/m/${code}?lang=nl`)).text();
+    expect(nl).toContain("<h1>Testproduct &#60;i&#62;</h1>");
+    expect(nl).toContain("<title>Testproduct &#60;i&#62; – UMI Europe</title>");
+    const de = await (await call(`/m/${code}?lang=de`)).text();
+    expect(de).toContain("<h1>Test Product</h1>");
+  });
+
   it("leaves out the selector when there's only one language", async () => {
     const { code } = await createWithDocuments([["nl", "Handleiding"], ["nl", "Onderhoud"]]);
     const html = await (await call(`/m/${code}`)).text();

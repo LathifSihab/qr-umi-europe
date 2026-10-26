@@ -261,6 +261,31 @@ describe("products API", () => {
 
     expect((await call("/api/products/TEST-NOPE", json({ name: "X" }, "PATCH"))).status).toBe(404);
   });
+
+  it("saves a name per language, dropping blank ones", async () => {
+    const code = testCode();
+    await db.createProduct(code, "Mini bicycle pump");
+    const res = await call(
+      `/api/products/${code}`,
+      json({ name: "Mini bicycle pump", name_translations: { nl: "  Mini fietspomp ", fr: "", de: "Mini-Fahrradpumpe" } }, "PATCH"),
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).product.name_translations).toEqual({ nl: "Mini fietspomp", de: "Mini-Fahrradpumpe" });
+
+    // Searching finds translated names too.
+    const list = (await (await call("/api/products?q=fietspomp")).json()) as any;
+    expect(list.products.map((p: any) => p.code)).toContain(code);
+
+    for (const body of [
+      { name_translations: { xx: "Nope" } },
+      { name_translations: ["Nope"] },
+      { name_translations: { nl: 5 } },
+      { name_translations: { nl: "X".repeat(201) } },
+      {},
+    ]) {
+      expect((await call(`/api/products/${code}`, json(body, "PATCH"))).status, JSON.stringify(body)).toBe(400);
+    }
+  });
 });
 
 describe("documents API", () => {

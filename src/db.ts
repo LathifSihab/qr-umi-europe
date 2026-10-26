@@ -13,9 +13,13 @@ export interface Document {
   uploaded_by: string | null;
 }
 
+/** Product name per language. Languages without an entry use the product name. */
+export type NameTranslations = Partial<Record<Lang, string>>;
+
 export interface Product {
   code: string;
   name: string;
+  name_translations: NameTranslations;
   created_at: string;
   updated_at: string;
   /** Ordered by language, then position. */
@@ -40,7 +44,7 @@ const DOCUMENT_FIELDS = `d.id, d.lang, d.title, d.position, d.r2_key, d.original
 
 // Products with their documents as a JSON array, so a list is a single round trip.
 const PRODUCT_COLUMNS = `
-  p.code, p.name, p.created_at, p.updated_at,
+  p.code, p.name, p.name_translations, p.created_at, p.updated_at,
   COALESCE(
     (SELECT json_agg(json_build_object(
         'id', d.id, 'lang', d.lang, 'title', d.title, 'position', d.position,
@@ -69,6 +73,7 @@ function toProduct(row: Record<string, any>): Product {
   return {
     code: row.code,
     name: row.name,
+    name_translations: row.name_translations ?? {},
     created_at: new Date(row.created_at).toISOString(),
     updated_at: new Date(row.updated_at).toISOString(),
     documents: (row.documents as any[]).map(toDocument),
@@ -92,6 +97,7 @@ export class Db {
       ? await this.sql.query(
           `SELECT ${PRODUCT_COLUMNS} FROM products p
            WHERE p.code ILIKE $1 OR p.name ILIKE $1
+              OR EXISTS (SELECT 1 FROM jsonb_each_text(p.name_translations) t WHERE t.value ILIKE $1)
            ORDER BY p.code`,
           [`%${search.replace(/[\\%_]/g, "\\$&")}%`],
         )
@@ -116,12 +122,21 @@ export class Db {
     return rows.length === 1;
   }
 
-  /** Returns false if the product doesn't exist. */
-  async updateProductName(code: string, name: string): Promise<boolean> {
-    const rows = await this.sql`
-      UPDATE products SET name = ${name}, updated_at = now()
-      WHERE code = ${code}
-      RETURNING code`;
+  /**
+   * Sets the name and/or the translations (which replace the stored ones).
+   * Returns false if the product doesn't exist.
+   */
+  async updateProductName(
+    code: string,
+    { name, translations }: { name?: string; translations?: NameTranslations },
+  ): Promise<boolean> {
+    const rows = await this.sql.query(
+      `UPDATE products
+       SET name = COALESCE($2, name), name_translations = COALESCE($3::jsonb, name_translations), updated_at = now()
+       WHERE code = $1
+       RETURNING code`,
+      [code, name ?? null, translations ? JSON.stringify(translations) : null],
+    );
     return rows.length === 1;
   }
 

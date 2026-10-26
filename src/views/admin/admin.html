@@ -56,10 +56,17 @@
     <div class="grid">
       <div class="panel">
         <h2>Product name</h2>
-        <form id="name-form" class="inline-form">
-          <label for="p-name" class="visually-hidden">Product name</label>
-          <input id="p-name" type="text" maxlength="200" required>
-          <button class="btn" type="submit">Save name</button>
+        <form id="name-form" class="name-form">
+          <div class="field">
+            <label for="p-name">Default name</label>
+            <input id="p-name" type="text" maxlength="200" required aria-describedby="p-name-hint">
+            <p class="hint" id="p-name-hint">Shown in this admin, and to visitors in any language without its own name.</p>
+          </div>
+          <fieldset class="name-langs">
+            <legend>Name per language <span class="optional">(optional)</span></legend>
+            <div id="p-name-langs"></div>
+          </fieldset>
+          <button class="btn" type="submit">Save names</button>
         </form>
 
         <h2>Short link</h2>

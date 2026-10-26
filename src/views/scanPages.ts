@@ -132,12 +132,13 @@ export function pickLang(available: Lang[], requested: string | undefined, accep
  * language), then the product's documents in the chosen language.
  */
 export function documentsPage(
-  product: { code: string; name: string },
+  product: { code: string; name: string; name_translations: Partial<Record<Lang, string>> },
   available: Lang[],
   lang: Lang,
   documents: { id: number; title: string }[],
 ): string {
   const t = TEXT[lang];
+  const name = product.name_translations[lang] || product.name;
   const code = encodeURIComponent(product.code);
   const langNav =
     available.length > 1
@@ -156,8 +157,8 @@ export function documentsPage(
     .join("");
   return layout(
     lang,
-    product.name,
-    `${langNav}<h1>${escapeHtml(product.name)}</h1><p class="sub">${t.documents}</p><ul class="docs">${buttons}</ul>`,
+    name,
+    `${langNav}<h1>${escapeHtml(name)}</h1><p class="sub">${t.documents}</p><ul class="docs">${buttons}</ul>`,
   );
 }
 

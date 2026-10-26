@@ -27,10 +27,15 @@ describe("db: products", () => {
     expect(await db.createProduct(code, "Test product")).toBe(true);
 
     const p = await db.getProduct(code);
-    expect(p).toMatchObject({ code, name: "Test product", documents: [] });
+    expect(p).toMatchObject({ code, name: "Test product", name_translations: {}, documents: [] });
 
-    expect(await db.updateProductName(code, "Renamed")).toBe(true);
+    expect(await db.updateProductName(code, { name: "Renamed" })).toBe(true);
     expect((await db.getProduct(code))?.name).toBe("Renamed");
+
+    // Translations and name update independently; translations replace the stored set.
+    expect(await db.updateProductName(code, { translations: { nl: "Hernoemd", de: "Umbenannt" } })).toBe(true);
+    expect(await db.updateProductName(code, { translations: { nl: "Hernoemd" } })).toBe(true);
+    expect(await db.getProduct(code)).toMatchObject({ name: "Renamed", name_translations: { nl: "Hernoemd" } });
 
     expect(await db.deleteProduct(code)).toEqual([]);
     expect(await db.getProduct(code)).toBeNull();
@@ -48,7 +53,7 @@ describe("db: products", () => {
   });
 
   it("reports missing products", async () => {
-    expect(await db.updateProductName("TEST-NOPE", "X")).toBe(false);
+    expect(await db.updateProductName("TEST-NOPE", { name: "X" })).toBe(false);
     expect(await db.deleteProduct("TEST-NOPE")).toBeNull();
   });
 

@@ -160,7 +160,9 @@
   function renderList() {
     const q = $("#search").value.trim().toLowerCase();
     const list = state.products.filter(
-      (p) => !q || p.code.toLowerCase().includes(q) || p.name.toLowerCase().includes(q),
+      (p) =>
+        !q ||
+        [p.code, p.name, ...Object.values(p.name_translations)].some((s) => s.toLowerCase().includes(q)),
     );
     const el = $("#list");
 
@@ -284,6 +286,7 @@
     $("#p-title").textContent = p.name;
     $("#p-code").textContent = p.code;
     if (document.activeElement !== $("#p-name")) $("#p-name").value = p.name;
+    renderNameLangs();
     $("#p-link").textContent = p.short_url;
     $("#test-link").href = p.short_url;
     $("#p-qr").src = "/api/products/" + enc + "/qr.svg";
@@ -367,6 +370,35 @@
     $("#tab-" + lang).focus();
   }
 
+  /** One optional name field per language. An empty field falls back to the default name. */
+  function renderNameLangs() {
+    const p = state.current;
+    const box = $("#p-name-langs");
+    if (!box.children.length) {
+      box.innerHTML = state.me.languages
+        .map(
+          (l) =>
+            '<div class="name-lang">' +
+            '<label for="p-name-' + l.code + '"><span class="badge">' + l.code.toUpperCase() + "</span>" + esc(l.english) + "</label>" +
+            '<input id="p-name-' + l.code + '" data-lang="' + l.code + '" lang="' + l.code + '" type="text" maxlength="200" autocomplete="off">' +
+            "</div>",
+        )
+        .join("");
+    }
+    for (const input of box.querySelectorAll("input")) {
+      if (document.activeElement !== input) input.value = p.name_translations[input.dataset.lang] || "";
+    }
+    updateNamePlaceholders();
+  }
+
+  function updateNamePlaceholders() {
+    const fallback = $("#p-name").value.trim();
+    for (const input of $("#p-name-langs").querySelectorAll("input")) {
+      input.placeholder = fallback;
+      input.previousElementSibling.querySelector(".badge").classList.toggle("on", Boolean(input.value.trim()));
+    }
+  }
+
   async function saveName(e) {
     e.preventDefault();
     const name = $("#p-name").value.trim();
@@ -374,11 +406,14 @@
       toast("Enter a product name.", "error");
       return;
     }
+    // Every language is sent, so a cleared field removes that language's name.
+    const name_translations = {};
+    for (const input of $("#p-name-langs").querySelectorAll("input")) name_translations[input.dataset.lang] = input.value.trim();
     try {
-      const { product } = await api("PATCH", "/products/" + encodeURIComponent(state.current.code), { name });
+      const { product } = await api("PATCH", "/products/" + encodeURIComponent(state.current.code), { name, name_translations });
       upsertLocal(product);
       renderProduct();
-      toast("Name saved.");
+      toast("Names saved.");
     } catch (err) {
       toast(err.message, "error");
     }
@@ -692,6 +727,7 @@
     $("#add-code").addEventListener("input", updateCodePreview);
     $("#add-form").addEventListener("submit", submitAdd);
     $("#name-form").addEventListener("submit", saveName);
+    $("#name-form").addEventListener("input", updateNamePlaceholders);
     $("#copy-link").addEventListener("click", copyLink);
     $("#dl-png").addEventListener("click", downloadPng);
     $("#delete-open").addEventListener("click", openDelete);

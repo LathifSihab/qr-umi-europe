@@ -10,7 +10,7 @@ import {
   type Env,
 } from "../config";
 import { afterResponse } from "../background";
-import { Db, type Document, type Product } from "../db";
+import { Db, type Document, type NameTranslations, type Product } from "../db";
 import { qrSvg, shortUrl } from "../qr";
 import { deleteObjects, putDocument } from "../storage";
 
@@ -50,6 +50,7 @@ function present(p: Product, env: Env) {
   return {
     code: p.code,
     name: p.name,
+    name_translations: p.name_translations,
     short_url: shortUrl(env.PUBLIC_BASE_URL, p.code),
     created_at: p.created_at,
     updated_at: p.updated_at,
@@ -62,6 +63,24 @@ function cleanName(value: unknown): string {
   if (!name) throw new ApiError(400, "Enter a product name.");
   if (name.length > PRODUCT_NAME_MAX) throw new ApiError(400, `Keep the product name under ${PRODUCT_NAME_MAX} characters.`);
   return name;
+}
+
+/** { lang: name } for the scan page. Blank names are dropped, so that language uses the product name. */
+function cleanTranslations(value: unknown): NameTranslations {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ApiError(400, "name_translations must be an object of language code to name.");
+  }
+  const out: NameTranslations = {};
+  for (const [lang, raw] of Object.entries(value)) {
+    const l = langParam(lang);
+    if (raw !== null && typeof raw !== "string") throw new ApiError(400, `The ${l} name must be text.`);
+    const name = (raw ?? "").trim();
+    if (name.length > PRODUCT_NAME_MAX) {
+      throw new ApiError(400, `Keep the ${LANGUAGES.find((x) => x.code === l)!.english} name under ${PRODUCT_NAME_MAX} characters.`);
+    }
+    if (name) out[l] = name;
+  }
+  return out;
 }
 
 function cleanTitle(value: unknown): string {
@@ -198,8 +217,11 @@ apiRoutes.get("/products/:code", async (c) => {
 apiRoutes.patch("/products/:code", async (c) => {
   const db = Db.from(c.env);
   const code = normalizeCode(c.req.param("code"));
-  const name = cleanName((await readJson(c.req.raw)).name);
-  if (!(await db.updateProductName(code, name))) throw productGone();
+  const body = await readJson(c.req.raw);
+  if (body.name === undefined && body.name_translations === undefined) throw new ApiError(400, "Enter a product name.");
+  const name = body.name === undefined ? undefined : cleanName(body.name);
+  const translations = body.name_translations === undefined ? undefined : cleanTranslations(body.name_translations);
+  if (!(await db.updateProductName(code, { name, translations }))) throw productGone();
   return c.json({ product: present((await db.getProduct(code))!, c.env) });
 });
 
