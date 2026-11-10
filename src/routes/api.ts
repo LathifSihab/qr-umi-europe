@@ -5,6 +5,7 @@ import {
   MAX_UPLOAD_BYTES,
   PRODUCT_CODE_RE,
   PRODUCT_NAME_MAX,
+  documentVersion,
   isLang,
   normalizeCode,
   type Env,
@@ -41,9 +42,9 @@ apiRoutes.use("*", async (c, next) => {
   c.header("Cache-Control", "no-store");
 });
 
-/** Public shape of a document: R2 keys stay internal. */
+/** Public shape of a document: R2 keys stay internal. `version` goes in ?v= of PDF links. */
 function presentDocument({ r2_key: _key, ...d }: Document) {
-  return d;
+  return { ...d, version: documentVersion(d) };
 }
 
 function present(p: Product, env: Env) {

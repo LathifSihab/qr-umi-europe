@@ -1,4 +1,4 @@
-import { LANGUAGES, isLang, type Lang } from "../config";
+import { LANGUAGES, documentPath, isLang, type Lang } from "../config";
 
 export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -135,7 +135,7 @@ export function documentsPage(
   product: { code: string; name: string; name_translations: Partial<Record<Lang, string>> },
   available: Lang[],
   lang: Lang,
-  documents: { id: number; title: string }[],
+  documents: { id: number; title: string; uploaded_at: string }[],
 ): string {
   const t = TEXT[lang];
   const name = product.name_translations[lang] || product.name;
@@ -153,7 +153,7 @@ export function documentsPage(
         "</ul></nav>"
       : "";
   const buttons = documents
-    .map((d) => `<li><a class="btn" href="/f/${code}/${d.id}">${escapeHtml(d.title)}</a></li>`)
+    .map((d) => `<li><a class="btn" href="${documentPath(code, d)}">${escapeHtml(d.title)}</a></li>`)
     .join("");
   return layout(
     lang,

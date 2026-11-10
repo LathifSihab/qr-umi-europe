@@ -35,6 +35,20 @@ export const PRODUCT_NAME_MAX = 200;
 export const DOCUMENT_TITLE_MAX = 200;
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
+/**
+ * Changes whenever a document's PDF is replaced (uploaded_at is reset then). Public
+ * links carry it as ?v=, so a replaced PDF gets a new URL and no cache can serve
+ * the old file under it.
+ */
+export function documentVersion(doc: { uploaded_at: string }): string {
+  return Date.parse(doc.uploaded_at).toString(36);
+}
+
+/** Public URL path of one document's current PDF. `code` must be URL-safe. */
+export function documentPath(code: string, doc: { id: number; uploaded_at: string }): string {
+  return `/f/${code}/${doc.id}?v=${documentVersion(doc)}`;
+}
+
 export function normalizeCode(code: string): string {
   return code.trim().toUpperCase();
 }

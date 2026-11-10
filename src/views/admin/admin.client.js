@@ -346,7 +346,7 @@
         '<div class="row">' +
         '<button class="btn small icon" type="button" data-action="up" data-id="' + d.id + '"' + (i === 0 ? " disabled" : "") + ' aria-label="Move ' + t + ' up" title="Move up">↑</button>' +
         '<button class="btn small icon" type="button" data-action="down" data-id="' + d.id + '"' + (i === docs.length - 1 ? " disabled" : "") + ' aria-label="Move ' + t + ' down" title="Move down">↓</button>' +
-        '<a class="btn small" href="/f/' + enc + "/" + d.id + '" target="_blank" rel="noopener">View</a>' +
+        '<a class="btn small" href="/f/' + enc + "/" + d.id + "?v=" + encodeURIComponent(d.version) + '" target="_blank" rel="noopener">View</a>' +
         '<button class="btn small" type="button" data-action="edit" data-id="' + d.id + '">Edit</button>' +
         '<button class="btn small danger-btn" type="button" data-action="remove" data-id="' + d.id + '">Remove</button>' +
         "</div></li>"

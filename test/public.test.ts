@@ -1,8 +1,22 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { documentPath } from "../src/config";
 import { orderLangs, pickLang, preferredLangs } from "../src/views/scanPages";
 import { call, cleanup, createWithDocuments, db, pdf, testCode } from "./helpers";
 
 afterEach(cleanup);
+
+/** The versioned link the public pages give out for a document right now. */
+async function link(code: string, id: number): Promise<string> {
+  return documentPath(code, (await db.getDocument(code, id))!);
+}
+
+function replaceFile(code: string, id: number, body: BodyInit) {
+  return call(`/api/products/${code}/documents/${id}/file`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/pdf", "X-Filename": "new.pdf" },
+    body,
+  });
+}
 
 describe("GET /", () => {
   it("redirects to the main website", async () => {
@@ -43,7 +57,8 @@ describe("GET /m/:code", () => {
     const { code, ids } = await createWithDocuments(["nl"]);
     const res = await call(`/m/${code.toLowerCase()}`);
     expect(res.status).toBe(302);
-    expect(res.headers.get("Location")).toBe(`/f/${code}/${ids[0]}`);
+    expect(res.headers.get("Location")).toBe(await link(code, ids[0]));
+    expect(res.headers.get("Location")).toMatch(/\?v=[0-9a-z]+$/);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
@@ -70,8 +85,8 @@ describe("GET /m/:code", () => {
     expect(nav).not.toContain("lang=nl");
 
     // Only the German documents, in order, escaped.
-    expect(html).toContain(`href="/f/${code}/${ids[1]}">Bedienungsanleitung</a>`);
-    expect(html).toContain(`href="/f/${code}/${ids[2]}">Sicherheitshinweise &#60;b&#62;</a>`);
+    expect(html).toContain(`href="${await link(code, ids[1])}">Bedienungsanleitung</a>`);
+    expect(html).toContain(`href="${await link(code, ids[2])}">Sicherheitshinweise &#60;b&#62;</a>`);
     expect(html.indexOf("Bedienungsanleitung</a>")).toBeLessThan(html.indexOf("Sicherheitshinweise"));
     expect(html).not.toContain(">Manual</a>");
     expect(html).not.toMatch(/<script/i);
@@ -81,12 +96,12 @@ describe("GET /m/:code", () => {
     const { code, ids } = await createWithDocuments([["en", "Manual"], ["fr", "Mode d’emploi"]]);
     const fr = await (await call(`/m/${code}?lang=FR`, { headers: { "Accept-Language": "en" } })).text();
     expect(fr).toContain('<html lang="fr">');
-    expect(fr).toContain(`href="/f/${code}/${ids[1]}"`);
-    expect(fr).not.toContain(`href="/f/${code}/${ids[0]}"`);
+    expect(fr).toContain(`href="${await link(code, ids[1])}"`);
+    expect(fr).not.toContain(`/f/${code}/${ids[0]}?`);
 
     const fallback = await (await call(`/m/${code}?lang=nl`, { headers: { "Accept-Language": "nl" } })).text();
     expect(fallback).toContain('<html lang="en">');
-    expect(fallback).toContain(`href="/f/${code}/${ids[0]}"`);
+    expect(fallback).toContain(`href="${await link(code, ids[0])}"`);
   });
 
   it("shows the product name in the chosen language, else the default name", async () => {
@@ -126,17 +141,61 @@ describe("language negotiation", () => {
 });
 
 describe("GET /f/:code/:id", () => {
-  it("streams the PDF inline with a short cache, named after the title", async () => {
+  it("streams the PDF inline, named after the title", async () => {
     const { code, ids } = await createWithDocuments([["en", "Quick start (v2)"]]);
-    const res = await call(`/f/${code}/${ids[0]}`);
+    const res = await call(await link(code, ids[0]));
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("application/pdf");
     expect(res.headers.get("Content-Disposition")).toBe(
       `inline; filename="UMI-${code}-EN.pdf"; filename*=UTF-8''UMI%20${code}%20-%20Quick%20start%20%28v2%29.pdf`,
     );
-    expect(res.headers.get("Cache-Control")).toBe("public, max-age=300");
+    expect(res.headers.get("Cache-Control")).toBe("public, max-age=86400");
     expect(res.headers.get("Accept-Ranges")).toBe("bytes");
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(pdf("en Quick start (v2)"));
+  });
+
+  it("makes browsers check back for links without the current version", async () => {
+    const { code, ids } = await createWithDocuments(["en"]);
+    for (const path of [`/f/${code}/${ids[0]}`, `/f/${code}/${ids[0]}?v=old`]) {
+      const res = await call(path);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Cache-Control")).toBe("no-cache");
+      expect(new Uint8Array(await res.arrayBuffer())).toEqual(pdf("en Manual en"));
+    }
+  });
+
+  it("gives a replaced PDF a new link, and never serves the old file", async () => {
+    const { code, ids } = await createWithDocuments(["en"]);
+    const before = await link(code, ids[0]);
+    const etag = (await call(before, { method: "HEAD" })).headers.get("ETag")!;
+    await new Promise((r) => setTimeout(r, 5));
+    expect((await replaceFile(code, ids[0], pdf("version 2"))).status).toBe(200);
+
+    // The QR code now redirects to a different URL, so cached copies of the old one are never used.
+    const after = (await call(`/m/${code}`)).headers.get("Location")!;
+    expect(after).toBe(await link(code, ids[0]));
+    expect(after).not.toBe(before);
+    expect(new Uint8Array(await (await call(after)).arrayBuffer())).toEqual(pdf("version 2"));
+
+    // A browser revalidating the old link with the old ETag gets the new file, uncacheable.
+    const old = await call(before, { headers: { "If-None-Match": etag } });
+    expect(old.status).toBe(200);
+    expect(old.headers.get("Cache-Control")).toBe("no-cache");
+    expect(new Uint8Array(await old.arrayBuffer())).toEqual(pdf("version 2"));
+
+    // Resuming a download of the old file (If-Range with the old ETag) restarts with the whole new file.
+    const resumed = await call(after, { headers: { Range: "bytes=4-", "If-Range": etag } });
+    expect(resumed.status).toBe(200);
+    expect(new Uint8Array(await resumed.arrayBuffer())).toEqual(pdf("version 2"));
+  });
+
+  it("answers 304 when the browser already has the current file", async () => {
+    const { code, ids } = await createWithDocuments(["en"]);
+    const etag = (await call(`/f/${code}/${ids[0]}`, { method: "HEAD" })).headers.get("ETag")!;
+    const res = await call(`/f/${code}/${ids[0]}`, { headers: { "If-None-Match": etag } });
+    expect(res.status).toBe(304);
+    expect(res.headers.get("ETag")).toBe(etag);
+    expect(await res.text()).toBe("");
   });
 
   it("supports Range requests", async () => {

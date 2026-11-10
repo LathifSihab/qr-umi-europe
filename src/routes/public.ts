@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import logo from "../../assets/umi-logo.svg";
-import { PRODUCT_CODE_RE, isLang, normalizeCode, type Env } from "../config";
+import { PRODUCT_CODE_RE, documentPath, documentVersion, isLang, normalizeCode, type Env } from "../config";
 import { Db } from "../db";
 import { documentsPage, notAvailablePage, pickLang } from "../views/scanPages";
 
@@ -33,7 +33,7 @@ publicRoutes.get("/m/:code", async (c) => {
   if (product.documents.length === 1) {
     return new Response(null, {
       status: 302,
-      headers: { Location: `/f/${code}/${product.documents[0].id}`, "Cache-Control": "no-store" },
+      headers: { Location: documentPath(code, product.documents[0]), "Cache-Control": "no-store" },
     });
   }
 
@@ -69,7 +69,17 @@ function inlineFilename(code: string, lang: string, title: string): string {
   return `inline; filename="${fallback}"; filename*=UTF-8''${utf8}`;
 }
 
-// Streams the current PDF. Short cache so replaced documents show up within minutes.
+/** True if an If-None-Match / If-Range value names this ETag (weak or strong). */
+function etagMatches(header: string, etag: string): boolean {
+  const bare = (t: string) => t.trim().replace(/^W\//, "");
+  return header.split(",").some((t) => t.trim() === "*" || bare(t) === bare(etag));
+}
+
+// Streams the current PDF. Replacing a PDF keeps the document id but changes its
+// version, and every link we hand out carries ?v={version}. So a link with the
+// current version may be cached for a day: the file behind it never changes.
+// Anything else (no ?v=, an old version, links saved before versions existed)
+// gets the current file with no-cache, so browsers must check back every time.
 publicRoutes.on(["GET", "HEAD"], "/f/:code/:id", async (c) => {
   const code = normalizeCode(c.req.param("code"));
   const ref = c.req.param("id").toLowerCase();
@@ -91,13 +101,20 @@ publicRoutes.on(["GET", "HEAD"], "/f/:code/:id", async (c) => {
   const headers = new Headers({
     "Content-Type": "application/pdf",
     "Content-Disposition": inlineFilename(code, doc.lang, doc.title),
-    "Cache-Control": "public, max-age=300",
+    "Cache-Control": c.req.query("v") === documentVersion(doc) ? "public, max-age=86400" : "no-cache",
     "Accept-Ranges": "bytes",
     ETag: head.httpEtag,
   });
 
+  const ifNoneMatch = c.req.header("If-None-Match");
+  if (ifNoneMatch && etagMatches(ifNoneMatch, head.httpEtag)) return new Response(null, { status: 304, headers });
+
+  // A range of a file the client no longer has (If-Range names an old ETag) is
+  // useless to it: send the whole current file instead.
+  const ifRange = c.req.header("If-Range");
+  const rangeHeader = ifRange && !etagMatches(ifRange, head.httpEtag) ? null : (c.req.header("Range") ?? null);
   const size = head.size;
-  const range = parseRange(c.req.header("Range") ?? null, size);
+  const range = parseRange(rangeHeader, size);
   if (range === null) {
     headers.set("Content-Range", `bytes */${size}`);
     return new Response(null, { status: 416, headers });
