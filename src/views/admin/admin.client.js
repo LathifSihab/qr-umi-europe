@@ -370,7 +370,7 @@
     $("#tab-" + lang).focus();
   }
 
-  /** One optional name field per language. An empty field falls back to the default name. */
+  /** One name field per language: the name visitors see. The internal name is never a fallback. */
   function renderNameLangs() {
     const p = state.current;
     const box = $("#p-name-langs");
@@ -388,13 +388,11 @@
     for (const input of box.querySelectorAll("input")) {
       if (document.activeElement !== input) input.value = p.name_translations[input.dataset.lang] || "";
     }
-    updateNamePlaceholders();
+    updateNameBadges();
   }
 
-  function updateNamePlaceholders() {
-    const fallback = $("#p-name").value.trim();
+  function updateNameBadges() {
     for (const input of $("#p-name-langs").querySelectorAll("input")) {
-      input.placeholder = fallback;
       input.previousElementSibling.querySelector(".badge").classList.toggle("on", Boolean(input.value.trim()));
     }
   }
@@ -727,7 +725,7 @@
     $("#add-code").addEventListener("input", updateCodePreview);
     $("#add-form").addEventListener("submit", submitAdd);
     $("#name-form").addEventListener("submit", saveName);
-    $("#name-form").addEventListener("input", updateNamePlaceholders);
+    $("#name-form").addEventListener("input", updateNameBadges);
     $("#copy-link").addEventListener("click", copyLink);
     $("#dl-png").addEventListener("click", downloadPng);
     $("#delete-open").addEventListener("click", openDelete);

@@ -128,17 +128,25 @@ export function pickLang(available: Lang[], requested: string | undefined, accep
 }
 
 /**
+ * The product name visitors see: the one for their language, else the first
+ * other language's in the default order. Never the internal name (products.name).
+ */
+export function visitorName(names: Partial<Record<Lang, string>>, lang: Lang): string | undefined {
+  return names[lang] || LANGUAGES.map((l) => names[l.code]).find(Boolean);
+}
+
+/**
  * The scan page: a language selector at the top (when there's more than one
  * language), then the product's documents in the chosen language.
  */
 export function documentsPage(
-  product: { code: string; name: string; name_translations: Partial<Record<Lang, string>> },
+  product: { code: string; name_translations: Partial<Record<Lang, string>> },
   available: Lang[],
   lang: Lang,
   documents: { id: number; title: string; uploaded_at: string }[],
 ): string {
   const t = TEXT[lang];
-  const name = product.name_translations[lang] || product.name;
+  const name = visitorName(product.name_translations, lang);
   const code = encodeURIComponent(product.code);
   const langNav =
     available.length > 1
@@ -155,11 +163,9 @@ export function documentsPage(
   const buttons = documents
     .map((d) => `<li><a class="btn" href="${documentPath(code, d)}">${escapeHtml(d.title)}</a></li>`)
     .join("");
-  return layout(
-    lang,
-    name,
-    `${langNav}<h1>${escapeHtml(name)}</h1><p class="sub">${t.documents}</p><ul class="docs">${buttons}</ul>`,
-  );
+  // Without any visitor name, the page is simply titled "Product documents".
+  const heading = name ? `<h1>${escapeHtml(name)}</h1><p class="sub">${t.documents}</p>` : `<h1>${t.documents}</h1><p class="sub">UMI Europe</p>`;
+  return layout(lang, name ?? t.documents, `${langNav}${heading}<ul class="docs">${buttons}</ul>`);
 }
 
 export function notAvailablePage(acceptLanguage: string | null | undefined): string {

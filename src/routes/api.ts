@@ -66,7 +66,7 @@ function cleanName(value: unknown): string {
   return name;
 }
 
-/** { lang: name } for the scan page. Blank names are dropped, so that language uses the product name. */
+/** { lang: name } for the scan page. Blank names are dropped; that language then shows another language's name. */
 function cleanTranslations(value: unknown): NameTranslations {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ApiError(400, "name_translations must be an object of language code to name.");

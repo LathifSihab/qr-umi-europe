@@ -13,7 +13,7 @@ export interface Document {
   uploaded_by: string | null;
 }
 
-/** Product name per language. Languages without an entry use the product name. */
+/** The product name visitors see, per language. `name` is internal and never shown to them. */
 export type NameTranslations = Partial<Record<Lang, string>>;
 
 export interface Product {

@@ -69,12 +69,13 @@ describe("GET /m/:code", () => {
       ["de", "Sicherheitshinweise <b>"],
       ["fr", "Mode d’emploi"],
     ]);
+    await db.updateProductName(code, { translations: { de: "Testprodukt" } });
     const res = await call(`/m/${code}`, { headers: { "Accept-Language": "de-DE,de;q=0.9,en;q=0.8" } });
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     const html = await res.text();
     expect(html).toContain('<html lang="de">');
-    expect(html).toContain("Test Product");
+    expect(html).toContain("<h1>Testprodukt</h1>");
     expect(html).toContain("Produktdokumente");
 
     // The selector lists the languages that have documents, in the default order, before the title.
@@ -104,14 +105,24 @@ describe("GET /m/:code", () => {
     expect(fallback).toContain(`href="${await link(code, ids[0])}"`);
   });
 
-  it("shows the product name in the chosen language, else the default name", async () => {
+  it("shows the name for the chosen language, else another language's, never the internal name", async () => {
     const { code } = await createWithDocuments(["en", "nl", "de"]);
-    await db.updateProductName(code, { translations: { nl: "Testproduct <i>" } });
+    await db.updateProductName(code, { translations: { nl: "Testproduct <i>", fr: "Produit test" } });
     const nl = await (await call(`/m/${code}?lang=nl`)).text();
     expect(nl).toContain("<h1>Testproduct &#60;i&#62;</h1>");
     expect(nl).toContain("<title>Testproduct &#60;i&#62; – UMI Europe</title>");
+    // No German name: the first language in the default order that has one (en is empty, so nl).
     const de = await (await call(`/m/${code}?lang=de`)).text();
-    expect(de).toContain("<h1>Test Product</h1>");
+    expect(de).toContain("<h1>Testproduct &#60;i&#62;</h1>");
+    expect(de).not.toContain("Test Product");
+  });
+
+  it("titles the page generically when no language has a name", async () => {
+    const { code } = await createWithDocuments(["en", "de"]);
+    const de = await (await call(`/m/${code}?lang=de`)).text();
+    expect(de).toContain("<h1>Produktdokumente</h1>");
+    expect(de).toContain("<title>Produktdokumente – UMI Europe</title>");
+    expect(de).not.toContain("Test Product");
   });
 
   it("leaves out the selector when there's only one language", async () => {

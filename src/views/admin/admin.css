@@ -117,7 +117,7 @@ label { display: block; font-weight: 500; margin-bottom: 6px; }
 .name-form .field { margin-bottom: 14px; }
 .name-langs { border: none; margin: 0 0 14px; padding: 0; min-width: 0; }
 .name-langs legend { padding: 0; margin-bottom: 8px; font-weight: 500; }
-.name-langs .optional { color: var(--umi-muted); font-weight: 400; }
+.name-langs .hint { margin: 0 0 10px; }
 .name-lang { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 10px; }
 .name-lang + .name-lang { margin-top: 8px; }
 .name-lang label { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; }
